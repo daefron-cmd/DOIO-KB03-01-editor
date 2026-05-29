@@ -1,6 +1,8 @@
 """Keycode semantics: decode/encode, the Norwegian-Mac catalog, resolve_controls.
 Pure logic — no hardware, no Qt, no import of core."""
 
+from model import Snapshot, key_id, enc_id, ControlId
+
 # --- keycode table (moved from via.py) ---
 KEYCODES = {0x0000: "KC_NO", 0x0001: "KC_TRANSPARENT",
             0x0028: "KC_ENTER", 0x0029: "KC_ESCAPE",
@@ -184,9 +186,6 @@ CONSUMER_USAGE = {
     0xE9: 0x00A9, 0xEA: 0x00AA, 0xE2: 0x00A8,
     0xB5: 0x00AB, 0xB6: 0x00AC, 0xB7: 0x00AD, 0xCD: 0x00AE,
 }
-
-
-from model import Snapshot, key_id, enc_id, ControlId
 
 
 def _fold_mods(report_mods: int) -> int:

@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
     req_set_scalar = Signal(int, int)
     req_load_all = Signal()
     req_save = Signal()
+    req_reconnect = Signal()
 
     def __init__(self, control, listener):
         super().__init__()
@@ -52,7 +53,14 @@ class MainWindow(QMainWindow):
 
         self._banner = QLabel("")
         self._banner.setStyleSheet("color: #b00; font-weight: bold;")
-        self._v.addWidget(self._banner)
+        self._reconnect_btn = QPushButton("Reconnect")
+        self._reconnect_btn.clicked.connect(self.req_reconnect)
+        self._reconnect_btn.hide()
+        banner_row = QHBoxLayout()
+        banner_row.addWidget(self._banner)
+        banner_row.addWidget(self._reconnect_btn)
+        banner_row.addStretch()
+        self._v.addLayout(banner_row)
 
         self._build_layer_selector()
         self._build_device_widget()
@@ -67,6 +75,7 @@ class MainWindow(QMainWindow):
         self.req_set_scalar.connect(control.set_light_scalar)
         self.req_load_all.connect(control.load_all)
         self.req_save.connect(control.save)
+        self.req_reconnect.connect(control.reconnect)
 
         # worker → UI signals
         control.device_state.connect(self._on_device_state)
@@ -187,7 +196,12 @@ class MainWindow(QMainWindow):
 
     # --- worker/listener slots ---
     def _on_device_state(self, state):
-        self._banner.setText("DOIO not found — plug it in" if state == "no-device" else "")
+        if state == "no-device":
+            self._banner.setText("DOIO not found — plug it in")
+            self._reconnect_btn.show()
+        else:
+            self._banner.setText("")
+            self._reconnect_btn.hide()
 
     def _on_permission_state(self, state):
         if state == "input-monitoring-denied":
@@ -253,6 +267,8 @@ class MainWindow(QMainWindow):
             self.req_load_all.emit()
             return
         layer, code = pending  # success → local snapshot is source of truth
+        if self._snapshot is None:
+            return
         if cid[0] == "key":
             self._snapshot.keymap[layer][cid[1]] = code
         else:

@@ -5,7 +5,7 @@ created in start() which runs on the worker thread."""
 from PySide6.QtCore import QObject, Signal, Slot
 
 import core
-from model import Snapshot
+from model import key_id, enc_id
 
 
 class ControlWorker(QObject):
@@ -39,25 +39,30 @@ class ControlWorker(QObject):
         if self._dev is None:
             return
         self.loading.emit(True)
-        snap = core.read_all(self._dev)
+        try:
+            snap = core.read_all(self._dev)
+        except Exception:  # noqa: BLE001 — device yanked mid-read
+            self.loading.emit(False)
+            self.device_state.emit("no-device")
+            return
         self.loading.emit(False)
         self.snapshot_ready.emit(snap)
 
     @Slot(int, int, int)
     def set_key(self, layer, col, keycode):
         ok = self._guarded(lambda: core.set_key(self._dev, layer, col, keycode))
-        from model import key_id
         self.set_ack.emit(key_id(col), ok)
 
     @Slot(int, int, int, int)
     def set_encoder(self, layer, enc, direction, keycode):
         ok = self._guarded(
             lambda: core.set_encoder(self._dev, layer, enc, direction, keycode))
-        from model import enc_id
         self.set_ack.emit(enc_id(enc, direction), ok)
 
     @Slot(int, int)
     def get_key(self, layer, col) -> int:
+        if self._dev is None:
+            return 0
         return core.get_key(self._dev, layer, col)
 
     @Slot(int, int, int)
