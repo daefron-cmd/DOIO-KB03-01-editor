@@ -23,3 +23,27 @@ def test_decode_roundtrips_modded_value():
     assert decode(mod(KC_8, SHIFT, ALT)) == "LShift+LAlt+KC_8"
     assert decode(layer(MO, 1)) == "MO(1)"
     assert decode(0x002F) == "KC_LBRC"
+
+
+from catalog import CATALOG, render, reverse_index
+
+
+def test_catalog_keycodes_are_unique():
+    seen = {}
+    for cat, label, code in CATALOG:
+        assert code not in seen, f"dup {code:#06x}: {label} vs {seen[code]}"
+        seen[code] = label
+
+
+def test_render_prefers_friendly_label_then_falls_back():
+    # 'å' is in the catalog → friendly label with the QMK name.
+    assert render(0x002F) == "å  (KC_LBRC)"
+    # An arbitrary non-catalog int falls back to structural decode().
+    assert render(0x7821) == "RGB_MOD"  # only if not added as a catalog entry
+    assert render(0x1234) == decode(0x1234)
+
+
+def test_basic_special_present():
+    codes = {code for _, _, code in CATALOG}
+    assert 0x0000 in codes  # KC_NO
+    assert 0x0001 in codes  # KC_TRANSPARENT

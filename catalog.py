@@ -97,3 +97,82 @@ def mod(base: int, *mods: int, right: bool = False) -> int:
 def layer(op: int, n: int) -> int:
     """Layer-switch keycode, e.g. layer(MO, 1)."""
     return 0x5200 | op | (n & 0x1F)
+
+
+# (category, display_label, keycode_int). keycode_int must be unique.
+CATALOG: list[tuple[str, str, int]] = []
+
+
+def _add(cat: str, label: str, code: int) -> None:
+    CATALOG.append((cat, label, code))
+
+
+# basic / special
+_add("basic", "(disable)  (KC_NO)", KC_NO)
+_add("basic", "(transparent)  (KC_TRANSPARENT)", KC_TRNS)
+for _code, _name in ((0x0028, "Enter"), (0x0029, "Esc"), (0x002A, "Backspace"),
+                     (0x002B, "Tab"), (0x002C, "Space"), (0x004C, "Delete"),
+                     (0x0052, "Up"), (0x0051, "Down"), (0x0050, "Left"),
+                     (0x004F, "Right"), (0x004A, "Home"), (0x004D, "End"),
+                     (0x004B, "PgUp"), (0x004E, "PgDn")):
+    _add("basic", f"{_name}  ({KEYCODES[_code]})", _code)
+
+# letters a–z
+for _i in range(26):
+    _ch = chr(ord("a") + _i)
+    _add("letters", f"{_ch}  ({KEYCODES[KC_A + _i]})", KC_A + _i)
+# Norwegian dedicated letters
+_add("letters", f"å  ({KEYCODES[KC_LBRC]})", KC_LBRC)
+_add("letters", f"ø  ({KEYCODES[KC_SCLN]})", KC_SCLN)
+_add("letters", f"æ  ({KEYCODES[KC_QUOTE]})", KC_QUOTE)
+
+# numbers 0–9
+for _n, _code in ((1, KC_1), (2, KC_2), (3, KC_3), (4, KC_4), (5, KC_5),
+                  (6, KC_6), (7, KC_7), (8, KC_8), (9, KC_9), (0, KC_0)):
+    _add("numbers", f"{_n}  ({KEYCODES[_code]})", _code)
+
+# Norwegian-Mac symbols (verified empirically per spec §15 item 5)
+_add("symbols", "[  (A+KC_8)", mod(KC_8, ALT))
+_add("symbols", "{  (S+A+KC_8)", mod(KC_8, SHIFT, ALT))
+_add("symbols", "]  (A+KC_9)", mod(KC_9, ALT))
+_add("symbols", "}  (S+A+KC_9)", mod(KC_9, SHIFT, ALT))
+
+# media
+for _code in (0x00A9, 0x00AA, 0x00A8, 0x00AB, 0x00AC, 0x00AD, 0x00AE):
+    _short = {0x00A9: "vol+", 0x00AA: "vol-", 0x00A8: "mute",
+              0x00AB: "next", 0x00AC: "prev", 0x00AD: "stop",
+              0x00AE: "play/pause"}[_code]
+    _add("media", f"{_short}  ({KEYCODES[_code]})", _code)
+
+# modifiers
+for _code in (0x00E0, 0x00E1, 0x00E2, 0x00E3):
+    _add("modifiers", f"{KEYCODES[_code]}", _code)
+
+# layers
+for _op, _name in ((MO, "MO"), (TO, "TO"), (TG, "TG")):
+    for _n in range(4):
+        _add("layers", f"{_name}({_n})", layer(_op, _n))
+
+# lighting
+for _code in (0x7820, 0x7821, 0x7823, 0x7824, 0x7827, 0x7828):
+    _add("lighting", f"{KEYCODES[_code]}", _code)
+
+# unique-keycode assertion (fail fast — a duplicate is an authoring bug)
+_seen: dict[int, str] = {}
+for _cat, _label, _code in CATALOG:
+    assert _code not in _seen, f"duplicate keycode {_code:#06x}"
+    _seen[_code] = _label
+
+
+def reverse_index() -> dict[int, tuple[str, str, int]]:
+    return {code: (cat, label, code) for cat, label, code in CATALOG}
+
+
+_REVERSE = reverse_index()
+
+
+def render(code: int) -> str:
+    entry = _REVERSE.get(code)
+    if entry:
+        return entry[1]
+    return decode(code)
