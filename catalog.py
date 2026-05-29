@@ -184,3 +184,53 @@ CONSUMER_USAGE = {
     0xE9: 0x00A9, 0xEA: 0x00AA, 0xE2: 0x00A8,
     0xB5: 0x00AB, 0xB6: 0x00AC, 0xB7: 0x00AD, 0xCD: 0x00AE,
 }
+
+
+from model import Snapshot, key_id, enc_id, ControlId
+
+
+def _fold_mods(report_mods: int) -> int:
+    """HID 8-bit L/R mod byte → QMK 5-bit field (+0x10 right side)."""
+    low = report_mods & 0x0F
+    high = (report_mods >> 4) & 0x0F
+    return (high | RIGHT) if high else low
+
+
+def _reconstruct(iface_kind: str, report_mods: int, code: int) -> int | None:
+    """Turn one report entry into a 16-bit QMK keycode to match the snapshot."""
+    if iface_kind == "consumer":
+        qmk = CONSUMER_USAGE.get(code)
+        return qmk
+    qmk_mods = _fold_mods(report_mods)
+    return ((qmk_mods << 8) | code) if qmk_mods else code
+
+
+def resolve_controls(snapshot: Snapshot, iface_kind: str,
+                     mods: int, keycodes: list[int]) -> list[ControlId]:
+    """Best-effort: which physical control(s) produced this report, matched
+    against the UNION of all layers. Not layer-specific (per design)."""
+    targets: set[int] = set()
+    for code in keycodes:
+        if not code:
+            continue
+        rc = _reconstruct(iface_kind, report_mods=mods, code=code)
+        if rc is not None:
+            targets.add(rc)
+    if not targets:
+        return []
+    hits: list[ControlId] = []
+    seen: set[ControlId] = set()
+    for layer_map in snapshot.keymap:
+        for col, value in enumerate(layer_map):
+            cid = key_id(col)
+            if value in targets and cid not in seen:
+                seen.add(cid)
+                hits.append(cid)
+    for layer_encs in snapshot.encoders:
+        for enc, dirs in enumerate(layer_encs):
+            for direction, value in enumerate(dirs):
+                cid = enc_id(enc, direction)
+                if value in targets and cid not in seen:
+                    seen.add(cid)
+                    hits.append(cid)
+    return hits
