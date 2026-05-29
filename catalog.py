@@ -133,7 +133,10 @@ for _n, _code in ((1, KC_1), (2, KC_2), (3, KC_3), (4, KC_4), (5, KC_5),
                   (6, KC_6), (7, KC_7), (8, KC_8), (9, KC_9), (0, KC_0)):
     _add("numbers", f"{_n}  ({KEYCODES[_code]})", _code)
 
-# Norwegian-Mac symbols (verified empirically per spec §15 item 5)
+# Norwegian-Mac symbols. Hardware-verified 2026-05-29 (Task 11 step 5): [ and {
+# type correctly on a Norwegian-Mac layout. NB: these are Option/Option-Shift
+# combos — a window manager with global ⌥ hotkeys (e.g. AeroSpace, ⌥N=workspace)
+# will intercept them before any text field; disable it to verify.
 _add("symbols", "[  (A+KC_8)", mod(KC_8, ALT))
 _add("symbols", "{  (S+A+KC_8)", mod(KC_8, SHIFT, ALT))
 _add("symbols", "]  (A+KC_9)", mod(KC_9, ALT))

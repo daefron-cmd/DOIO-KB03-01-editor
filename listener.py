@@ -9,8 +9,10 @@ from PySide6.QtCore import QObject, Signal
 
 VID, PID = 0xD010, 0x0301
 
-# Confirmed on real hardware in Task 11 (consumer report byte offset FIRST).
-# Default assumes a 16-bit LE usage immediately after a report-id byte.
+# Verified on hardware 2026-05-29 (Task 11 step 1): the knob's media usages
+# arrive on the 0x0001/0x02 interface (which opens WITHOUT Input Monitoring),
+# NOT on 0x000C/0x01. Layout is [report-id 0x04][LE16 usage]: 04 E9 00 = vol+
+# (0x00E9), 04 EA 00 = vol- (0x00EA), 04 00 00 = release. Usage is at offset 1.
 CONSUMER_USAGE_OFFSET = 1
 
 

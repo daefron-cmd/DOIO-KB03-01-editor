@@ -15,9 +15,15 @@ from model import Snapshot, key_id, enc_id
 
 # control_id -> (label, slot-setter) wiring is built from device topology.
 KEY_COLS = [0, 1, 2, 4]   # Key1, Key2, Key3, Knob push (col 3 = advanced)
-ENCODERS = [(0, 0), (0, 1), (1, 0), (1, 1)]  # (enc, dir); ring vs inner per Task 11
+# (enc, dir); verified Task 11: enc 1 = outer ring, enc 0 = inner knob. Outer
+# ring listed first (primary control). dir 0/1 = CCW/CW per QMK convention.
+ENCODERS = [(1, 0), (1, 1), (0, 0), (0, 1)]
+ENC_NAMES = {1: "Outer ring", 0: "Inner knob"}
+DIR_NAMES = {0: "CCW", 1: "CW"}
 
-# index -> name, confirmed in Task 11 (best-guess until verified).
+# index -> name. Lighting control + all sliders verified working on hardware
+# 2026-05-29 (Task 11), but the per-index effect NAMES are still best-guess and
+# were not individually confirmed (cosmetic; low priority on this unit).
 EFFECTS = [
     "SOLID_COLOR_OFF/NONE", "SOLID_COLOR", "GRADIENT_UP_DOWN",
     "GRADIENT_LEFT_RIGHT", "BREATHING", "BAND_SAT", "BAND_VAL",
@@ -115,7 +121,7 @@ class MainWindow(QMainWindow):
 
         enc_row = QHBoxLayout()
         for enc, direction in ENCODERS:
-            btn = QPushButton("—")
+            btn = QPushButton(f"{ENC_NAMES[enc]} {DIR_NAMES[direction]}\n—")
             btn.clicked.connect(partial(self._select, enc_id(enc, direction)))
             self._control_buttons[enc_id(enc, direction)] = btn
             enc_row.addWidget(btn)
@@ -241,8 +247,10 @@ class MainWindow(QMainWindow):
             self._control_buttons[key_id(col)].setText(
                 render(self._snapshot.keymap[self._layer][col]))
         for enc, direction in ENCODERS:
+            label = f"{ENC_NAMES[enc]} {DIR_NAMES[direction]}"
+            mapping = render(self._snapshot.encoders[self._layer][enc][direction])
             self._control_buttons[enc_id(enc, direction)].setText(
-                render(self._snapshot.encoders[self._layer][enc][direction]))
+                f"{label}\n{mapping}")
 
     def _select(self, cid):
         self._selected = cid

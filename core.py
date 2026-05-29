@@ -12,6 +12,15 @@ KEY_LABELS = ["Key 1", "Key 2", "Key 3", "Layers", "Knob push"]
 N_COLS = 5
 N_ENCODERS = 2
 
+# Verified on hardware 2026-05-29 (Task 11):
+#  - Encoders: enc 1 = OUTER ring (ships as volume), enc 0 = INNER knob (ships as
+#    track prev/next). Physical index↔ring confirmed by the user; the dir 0/1 ↔
+#    CCW/CW mapping follows QMK convention and was not directionally retested.
+#  - col 3 "Layers" is a REAL key, not a phantom: it holds a TO(n) hard cycle —
+#    TO(1)/TO(2)/TO(3)/TO(0) on layers 0/1/2/3 — i.e. the back button steps
+#    0->1->2->3->0. It is the only physical layer switch; overwriting it on a
+#    layer breaks the cycle at that point (the app can rewrite it back).
+
 # VIA command IDs
 GET_PROTOCOL_VERSION = 0x01
 GET_KEYBOARD_VALUE = 0x02
@@ -33,7 +42,16 @@ LIGHT_COLOR = 0x04
 
 
 def open_raw():
-    """Open the 0xFF60 VIA raw-HID interface; return a handle or None."""
+    """Open the 0xFF60 VIA raw-HID interface; return a handle or None.
+
+    WARNING — single owner only. VIA is strictly request/response over one
+    shared handle. Do NOT run a CLI script that calls open_raw() while the GUI
+    (main.py) is running, or vice versa: two processes reading/writing 0xFF60
+    concurrently desync the protocol stream and the device appears to "stop
+    responding" (control dies, the listener stalls) until everything is closed
+    — a replug won't fix it because it's a host-side handle clash, not the
+    device. Symptom looks like a severed connection; cause is contention.
+    """
     for d in hid.enumerate(VID, PID):
         if d["usage_page"] == 0xFF60 and d["usage"] == 0x61:
             dev = hid.device()
