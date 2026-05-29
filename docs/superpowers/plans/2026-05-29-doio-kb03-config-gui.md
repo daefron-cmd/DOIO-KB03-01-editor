@@ -556,12 +556,23 @@ def test_non_emitting_keycode_returns_empty():
     assert resolve_controls(snap, "keyboard", 0x00, []) == []
 
 
-def test_right_side_modded_match():
-    code = mod(KC_A, SHIFT, ALT)  # left Shift+Alt + A
+def test_left_shift_alt_match():
+    code = mod(KC_A, SHIFT, ALT)  # left Shift+Alt + A → 0x0604
     km = [[code, 0, 0, 0, 0]] + [[0] * 5 for _ in range(3)]
     snap = _snap(km)
     # report mod byte 0x06 = LShift|LAlt, base KC_A → matches.
+    # NOTE: this passes even under the naive (report<<8)|base fold because
+    # left Shift+Alt equals the QMK field by coincidence — see the guard below.
     assert resolve_controls(snap, "keyboard", 0x06, [KC_A]) == [key_id(0)]
+
+
+def test_right_side_fold_guards_naive_bug():
+    code = mod(KC_A, ALT, right=True)          # 0x1404
+    km = [[code, 0, 0, 0, 0]] + [[0] * 5 for _ in range(3)]
+    snap = _snap(km)
+    # report 0x40 = Right Alt; the naive (0x40<<8)|0x04 = 0x4004 would NOT
+    # match 0x1404 — only the correct fold (high nibble | 0x10) matches.
+    assert resolve_controls(snap, "keyboard", 0x40, [KC_A]) == [key_id(0)]
 
 
 def test_consumer_media_match():
@@ -1202,7 +1213,7 @@ model, and the two workers via signals. Never touches a HID handle."""
 
 from functools import partial
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QHBoxLayout, QLabel, QMainWindow, QPushButton,
     QRadioButton, QVBoxLayout, QWidget,
@@ -1218,6 +1229,16 @@ ENCODERS = [(0, 0), (0, 1), (1, 0), (1, 1)]  # (enc, dir); ring vs inner per Tas
 
 
 class MainWindow(QMainWindow):
+    # Request signals → control-worker slots. Emitting (not calling) is what
+    # makes the cross-thread delivery QUEUED, so worker code runs on its own
+    # thread and the HID handle is never touched from the UI thread.
+    req_set_key = Signal(int, int, int)
+    req_set_encoder = Signal(int, int, int, int)
+    req_set_color = Signal(int, int)
+    req_set_scalar = Signal(int, int)
+    req_load_all = Signal()
+    req_save = Signal()
+
     def __init__(self, control, listener):
         super().__init__()
         self.setWindowTitle("DOIO KB03-01")
@@ -1227,6 +1248,7 @@ class MainWindow(QMainWindow):
         self._layer = 0
         self._control_buttons: dict[tuple, QPushButton] = {}
         self._selected: tuple | None = None
+        self._pending_code: dict[tuple, tuple[int, int]] = {}  # cid -> (layer, code)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -1241,7 +1263,16 @@ class MainWindow(QMainWindow):
         self._build_editor()
         # LED panel added in Task 13: self._build_led_panel()
 
-        # worker signals
+        # UI → worker requests (auto-connection across threads → QUEUED,
+        # because `control` lives on control_thread). EMIT these, never call.
+        self.req_set_key.connect(control.set_key)
+        self.req_set_encoder.connect(control.set_encoder)
+        self.req_set_color.connect(control.set_color)
+        self.req_set_scalar.connect(control.set_light_scalar)
+        self.req_load_all.connect(control.load_all)
+        self.req_save.connect(control.save)
+
+        # worker → UI signals
         control.device_state.connect(self._on_device_state)
         control.loading.connect(self._on_loading)
         control.snapshot_ready.connect(self._on_snapshot)
@@ -1285,6 +1316,18 @@ class MainWindow(QMainWindow):
         enc_row.addWidget(push)
         self._v.addLayout(enc_row)
 
+        # advanced: matrix col 3 "Layers" (physical meaning confirmed in Task 11)
+        adv_row = QHBoxLayout()
+        adv_row.addWidget(QLabel("Advanced:"))
+        adv = QPushButton("—")
+        adv.setToolTip("col 3 'Layers' — overwriting may remove the device's "
+                       "only physical layer-switch; the app can rewrite it back")
+        adv.clicked.connect(partial(self._select, key_id(3)))
+        self._control_buttons[key_id(3)] = adv
+        adv_row.addWidget(adv)
+        adv_row.addStretch()
+        self._v.addLayout(adv_row)
+
     def _build_editor(self):
         self._editor_label = QLabel("Select a control to edit")
         self._v.addWidget(self._editor_label)
@@ -1321,7 +1364,7 @@ class MainWindow(QMainWindow):
     def _refresh_controls(self):
         if self._snapshot is None:
             return
-        for col in (0, 1, 2, 4):
+        for col in (0, 1, 2, 3, 4):
             self._control_buttons[key_id(col)].setText(
                 render(self._snapshot.keymap[self._layer][col]))
         for enc, direction in ENCODERS:
@@ -1338,24 +1381,29 @@ class MainWindow(QMainWindow):
             return
         code = self._combo.currentData()
         cid = self._selected
+        # carry (layer, code) with the request so a later combo/layer change
+        # can't corrupt the snapshot update when the queued ack returns.
+        self._pending_code[cid] = (self._layer, code)
         if cid[0] == "key":
-            self._control.set_key(self._layer, cid[1], code)
+            self.req_set_key.emit(self._layer, cid[1], code)
         else:
-            self._control.set_encoder(self._layer, cid[1], cid[2], code)
+            self.req_set_encoder.emit(self._layer, cid[1], cid[2], code)
 
     def _on_set_ack(self, cid, ok):
-        if not ok:
+        pending = self._pending_code.pop(cid, None)
+        if not ok or pending is None:
             self._banner.setText(f"Write failed for {cid} — resyncing")
-            # targeted resync omitted for brevity; load_all() is the fallback
-            self._control.load_all()
+            # v1: rare write-failure resyncs via full load_all() (see plan notes).
+            # worker.get_key/get_encoder exist as the hook for targeted resync.
+            self.req_load_all.emit()
             return
-        # success → update local snapshot directly (source of truth on ack)
-        code = self._combo.currentData()
+        layer, code = pending  # success → local snapshot is source of truth
         if cid[0] == "key":
-            self._snapshot.keymap[self._layer][cid[1]] = code
+            self._snapshot.keymap[layer][cid[1]] = code
         else:
-            self._snapshot.encoders[self._layer][cid[1]][cid[2]] = code
-        self._refresh_controls()
+            self._snapshot.encoders[layer][cid[1]][cid[2]] = code
+        if layer == self._layer:
+            self._refresh_controls()
 
     def _on_input_event(self, iface_kind, mods, keycodes):
         if self._snapshot is None:
@@ -1412,7 +1460,7 @@ def _build_led_panel(self):
     for i, name in enumerate(EFFECTS):
         self._effect.addItem(f"{i} — {name}", i)
     self._effect.activated.connect(
-        lambda _i: self._control.set_light_scalar(
+        lambda _i: self.req_set_scalar.emit(
             core.LIGHT_EFFECT, self._effect.currentData()))
     grid.addWidget(QLabel("Effect"), 0, 0)
     grid.addWidget(self._effect, 0, 1)
@@ -1437,7 +1485,7 @@ def _build_led_panel(self):
         grid.addWidget(s, r, 1)
 
     save = QPushButton("Save to keyboard")
-    save.clicked.connect(self._control.save)
+    save.clicked.connect(self.req_save)   # signal→slot across threads = queued
     grid.addWidget(save, len(specs) + 1, 1)
     self._v.addLayout(grid)
 
@@ -1452,20 +1500,26 @@ def _flush_sliders(self):
     if "hue" in pend or "sat" in pend:
         hue = self._sliders["hue"].value()
         sat = self._sliders["sat"].value()
-        self._control.set_color(hue, sat)   # both channels, one command
+        self.req_set_color.emit(hue, sat)   # both channels, one command
     for key, value in pend.items():
         if key in (core.LIGHT_BRIGHTNESS, core.LIGHT_SPEED):
-            self._control.set_light_scalar(key, value)
+            self.req_set_scalar.emit(key, value)
 ```
 
-Also extend `_on_snapshot` to initialize the panel from the snapshot:
+Also extend `_on_snapshot` to initialize the panel from the snapshot. Block
+slider signals during init so `setValue()` does not fire `valueChanged` → a
+redundant write-back of the values we just read from the device (`activated`
+on the effect combo is user-only, so it needs no blocking):
 ```python
     # in _on_snapshot, after self._snapshot = snap:
     self._effect.setCurrentIndex(min(snap.effect, self._effect.count() - 1))
-    self._sliders[core.LIGHT_BRIGHTNESS].setValue(min(snap.brightness, 200))
-    self._sliders[core.LIGHT_SPEED].setValue(snap.speed)
-    self._sliders["hue"].setValue(snap.hue)
-    self._sliders["sat"].setValue(snap.sat)
+    inits = {core.LIGHT_BRIGHTNESS: min(snap.brightness, 200),
+             core.LIGHT_SPEED: snap.speed, "hue": snap.hue, "sat": snap.sat}
+    for key, value in inits.items():
+        s = self._sliders[key]
+        s.blockSignals(True)
+        s.setValue(value)
+        s.blockSignals(False)
 ```
 
 - [ ] **Step 2: Launch and exercise the LED panel**
@@ -1520,7 +1574,10 @@ git commit -m "feat: LED panel — effect dropdown, throttled sliders, color-as-
 - Consumer bridge + byte-offset verify → Tasks 5, 8, 11.
 - Two handles / two threads / `moveToThread` + init-slot handle creation → Tasks 8–10.
 - Coarse worker API (`load_all`/`set_*`/`get_*`/`set_color`/`save`) → Tasks 7, 9.
-- Layer selector as snapshot re-render; post-set source-of-truth (update on ack, resync on failure) → Task 12.
+- UI→worker calls are all QUEUED via request signals (`req_*` emitted, never direct method calls), preserving the moveToThread freeze-prevention and single-thread HID ownership → Tasks 10, 12, 13.
+- Layer selector as snapshot re-render; post-set source-of-truth carries `(layer, code)` with the request and updates the snapshot on success ack → Task 12.
+- col 3 "Layers" editable in an advanced area with the overwrite caution (spec §12) → Task 12.
+- **Deliberate v1 simplification:** the rare write-FAILURE path resyncs via full `load_all()` rather than spec §12's targeted single-cell re-read. `worker.get_key`/`get_encoder` exist as the hook to wire targeted resync later; not used in v1.
 - LED color-as-unit, ~25 Hz throttle/coalesce, brightness cap 200, effect index labels, Save → Task 13.
 - Banners for no-device / Input-Monitoring-denied → Tasks 9, 12.
 - EEPROM-immediate vs LED-Save persistence → Task 15.
