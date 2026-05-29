@@ -47,6 +47,10 @@ class MainWindow(QMainWindow):
         self._selected: tuple | None = None
         self._pending_code: dict[tuple, tuple[int, int]] = {}  # cid -> (layer, code)
 
+        # TODO(gui): use pictures/gui_background.png (2048x2048) as the window
+        # background and position the key/encoder controls over the device image
+        # instead of the plain vertical layout. Consider downsizing the asset
+        # (~8MB) and committing it once the layout coordinates are pinned.
         root = QWidget()
         self.setCentralWidget(root)
         self._v = QVBoxLayout(root)
