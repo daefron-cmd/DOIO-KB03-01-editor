@@ -17,7 +17,7 @@ import time
 
 import hid
 
-from via import KEYCODES
+from catalog import KEYCODES
 
 VID, PID = 0xD010, 0x0301
 MOD_NAMES = ["LCtrl", "LShift", "LAlt", "LGUI", "RCtrl", "RShift", "RAlt", "RGUI"]
