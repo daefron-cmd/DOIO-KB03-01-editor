@@ -1,0 +1,84 @@
+"""Live-press listener. Pure report decode (unit-tested) + a QObject worker
+that opens the keyboard + consumer interfaces and emits decoded events.
+Stays pure of layout/snapshot knowledge — matching happens in the UI."""
+
+import time
+
+import hid
+from PySide6.QtCore import QObject, Signal
+
+VID, PID = 0xD010, 0x0301
+
+# Confirmed on real hardware in Task 11 (consumer report byte offset FIRST).
+# Default assumes a 16-bit LE usage immediately after a report-id byte.
+CONSUMER_USAGE_OFFSET = 1
+
+
+def decode_keyboard_report(report: list[int]) -> tuple[int, list[int]]:
+    """(modifiers, [keycodes]) from a boot-style keyboard report."""
+    mods = report[0]
+    keys = [u for u in report[2:8] if u]
+    return mods, keys
+
+
+def decode_consumer_report(report: list[int]) -> list[int]:
+    """[consumer usage ids] — single LE16 usage at the verified offset."""
+    off = CONSUMER_USAGE_OFFSET
+    if len(report) < off + 2:
+        return []
+    usage = report[off] | (report[off + 1] << 8)
+    return [usage] if usage else []
+
+
+class Listener(QObject):
+    input_event = Signal(str, int, list)        # iface_kind, mods, keycodes
+    permission_state = Signal(str)              # "" ok / "input-monitoring-denied"
+
+    def __init__(self):
+        super().__init__()
+        self._running = False
+        self._devs = []  # (iface_kind, hid.device)
+
+    def start(self):
+        """init slot — runs ON the worker thread (connected queued)."""
+        self._open()
+        self._running = True
+        self._loop()
+
+    def stop(self):
+        self._running = False
+
+    def _open(self):
+        denied = False
+        for d in hid.enumerate(VID, PID):
+            up, u = d["usage_page"], d["usage"]
+            kind = ("keyboard" if (up, u) == (0x01, 0x06)
+                    else "consumer" if up in (0x01, 0x0C) and u != 0x06
+                    else None)
+            if kind is None:
+                continue
+            try:
+                dev = hid.device()
+                dev.open_path(d["path"])
+                dev.set_nonblocking(1)
+                self._devs.append((kind, dev))
+            except Exception:  # noqa: BLE001 — keyboard iface needs permission
+                if kind == "keyboard":
+                    denied = True
+        self.permission_state.emit("input-monitoring-denied" if denied else "")
+
+    def _loop(self):
+        while self._running:
+            for kind, dev in self._devs:
+                data = dev.read(64)
+                if not data:
+                    continue
+                if kind == "keyboard":
+                    mods, keys = decode_keyboard_report(data)
+                    if keys:  # ignore mods-only transients for flashing
+                        self.input_event.emit("keyboard", mods, keys)
+                else:
+                    usages = decode_consumer_report(data)
+                    if usages:
+                        self.input_event.emit("consumer", 0, usages)
+            time.sleep(0.005)
