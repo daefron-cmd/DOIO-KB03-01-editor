@@ -60,7 +60,7 @@ fixed:
 A small package, each module with one clear job and pinned dependency direction:
 
 ```
-model.py     — neutral data types (Snapshot dataclass etc.). NO Qt, NO hardware.
+model.py     — neutral data types (Snapshot, control_id). NO Qt, NO hardware.
 core.py      — VIA transport. Owns the 0xFF60 handle. Returns RAW ints/bytes.
 catalog.py   — semantics: int<->char/label, decode + encode, resolve_controls().
 listener.py  — live-press worker (keyboard + consumer interfaces).
@@ -206,6 +206,13 @@ It:
 4. Returns matching control ids: unique → one; same keycode on multiple controls
    → **all** (flash-all on ambiguity); non-matching / non-emitting → empty.
 
+`control_id` is a **neutral structural position** — a plain tuple like
+`("key", col)` or `("encoder", enc, dir)`, defined in `model.py`, **never a
+`core`-owned type**. So `catalog` returns positions (not core types) and never
+imports `core`; the UI maps those positions to widgets/labels using `core`'s
+topology map. This preserves the pinned core↔catalog independence (the same
+reason `Snapshot` lives in `model.py`).
+
 ## 10. Live-press listener (`listener.py`)
 
 A QObject worker (`moveToThread`, queued connections); handles opened in the
@@ -296,8 +303,8 @@ a HID handle.
    - **Caution (advanced area):** overwriting col 3 "Layers" could remove the
      device's only physical layer-switch — the app remains the recovery path (can
      rewrite it back).
-5. **LED panel:** effect dropdown showing **index alongside name** (`11 —
-   BREATHING`; effect names are best-guess — see VERIFY), brightness / speed / hue
+5. **LED panel:** effect dropdown showing **index alongside name** (`N —
+   <name>`; effect names are best-guess — see VERIFY), brightness / speed / hue
    / sat sliders. Brightness slider capped at **200** (firmware render cap) with a
    small annotation. Each slider change → throttled/coalesced worker call (see
    below), applied **live** on the device. Color: moving **either** hue or sat
