@@ -176,3 +176,11 @@ def render(code: int) -> str:
     if entry:
         return entry[1]
     return decode(code)
+
+
+# Consumer-Page usage ID -> QMK keycode (media-mapped encoders emit on the
+# consumer interface, not as QMK keycodes).
+CONSUMER_USAGE = {
+    0xE9: 0x00A9, 0xEA: 0x00AA, 0xE2: 0x00A8,
+    0xB5: 0x00AB, 0xB6: 0x00AC, 0xB7: 0x00AD, 0xCD: 0x00AE,
+}

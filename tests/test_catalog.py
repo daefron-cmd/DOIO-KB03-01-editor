@@ -47,3 +47,16 @@ def test_basic_special_present():
     codes = {code for _, _, code in CATALOG}
     assert 0x0000 in codes  # KC_NO
     assert 0x0001 in codes  # KC_TRANSPARENT
+
+
+from catalog import CONSUMER_USAGE
+
+
+def test_consumer_usage_bridges_to_qmk_keycodes():
+    assert CONSUMER_USAGE[0xE9] == 0x00A9   # Vol+  -> KC_AUDIO_VOL_UP
+    assert CONSUMER_USAGE[0xEA] == 0x00AA   # Vol-  -> KC_AUDIO_VOL_DOWN
+    assert CONSUMER_USAGE[0xE2] == 0x00A8   # Mute  -> KC_AUDIO_MUTE
+    assert CONSUMER_USAGE[0xB5] == 0x00AB   # Next  -> KC_MEDIA_NEXT_TRACK
+    assert CONSUMER_USAGE[0xB6] == 0x00AC   # Prev  -> KC_MEDIA_PREV_TRACK
+    assert CONSUMER_USAGE[0xB7] == 0x00AD   # Stop  -> KC_MEDIA_STOP
+    assert CONSUMER_USAGE[0xCD] == 0x00AE   # Play  -> KC_MEDIA_PLAY_PAUSE
