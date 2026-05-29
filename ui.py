@@ -5,8 +5,8 @@ from functools import partial
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QHBoxLayout, QLabel, QMainWindow, QPushButton,
-    QRadioButton, QVBoxLayout, QWidget,
+    QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
+    QPushButton, QRadioButton, QSlider, QVBoxLayout, QWidget,
 )
 
 import core
@@ -16,6 +16,12 @@ from model import Snapshot, key_id, enc_id
 # control_id -> (label, slot-setter) wiring is built from device topology.
 KEY_COLS = [0, 1, 2, 4]   # Key1, Key2, Key3, Knob push (col 3 = advanced)
 ENCODERS = [(0, 0), (0, 1), (1, 0), (1, 1)]  # (enc, dir); ring vs inner per Task 11
+
+# index -> name, confirmed in Task 11 (best-guess until verified).
+EFFECTS = [
+    "SOLID_COLOR_OFF/NONE", "SOLID_COLOR", "GRADIENT_UP_DOWN",
+    "GRADIENT_LEFT_RIGHT", "BREATHING", "BAND_SAT", "BAND_VAL",
+]  # extend/correct per Task 11
 
 
 class MainWindow(QMainWindow):
@@ -51,7 +57,7 @@ class MainWindow(QMainWindow):
         self._build_layer_selector()
         self._build_device_widget()
         self._build_editor()
-        # LED panel added in Task 13: self._build_led_panel()
+        self._build_led_panel()
 
         # UI → worker requests (auto-connection across threads → QUEUED,
         # because `control` lives on control_thread). EMIT these, never call.
@@ -128,6 +134,57 @@ class MainWindow(QMainWindow):
         self._combo.activated.connect(self._on_pick_keycode)
         self._v.addWidget(self._combo)
 
+    def _build_led_panel(self):
+        grid = QGridLayout()
+        self._effect = QComboBox()
+        for i, name in enumerate(EFFECTS):
+            self._effect.addItem(f"{i} — {name}", i)
+        self._effect.activated.connect(
+            lambda _i: self.req_set_scalar.emit(
+                core.LIGHT_EFFECT, self._effect.currentData()))
+        grid.addWidget(QLabel("Effect"), 0, 0)
+        grid.addWidget(self._effect, 0, 1)
+
+        self._sliders = {}
+        self._pending = {}                 # value_id/"color" -> latest value
+        self._tick = QTimer(self)          # ~25 Hz coalescing flush
+        self._tick.setInterval(40)
+        self._tick.timeout.connect(self._flush_sliders)
+        self._tick.start()
+
+        specs = [("Brightness", core.LIGHT_BRIGHTNESS, 200),
+                 ("Speed", core.LIGHT_SPEED, 255),
+                 ("Hue", "hue", 255),
+                 ("Sat", "sat", 255)]
+        for r, (name, key, maximum) in enumerate(specs, start=1):
+            s = QSlider(Qt.Horizontal)
+            s.setMaximum(maximum)          # brightness capped at 200 (render cap)
+            s.valueChanged.connect(partial(self._on_slider, key))
+            self._sliders[key] = s
+            grid.addWidget(QLabel(name), r, 0)
+            grid.addWidget(s, r, 1)
+
+        save = QPushButton("Save to keyboard")
+        save.clicked.connect(self.req_save)   # signal→slot across threads = queued
+        grid.addWidget(save, len(specs) + 1, 1)
+        self._v.addLayout(grid)
+
+    def _on_slider(self, key, value):
+        self._pending[key] = value         # coalesce to latest; flushed at 25 Hz
+
+    def _flush_sliders(self):
+        if not self._pending:
+            return
+        pend = self._pending
+        self._pending = {}
+        if "hue" in pend or "sat" in pend:
+            hue = self._sliders["hue"].value()
+            sat = self._sliders["sat"].value()
+            self.req_set_color.emit(hue, sat)   # both channels, one command
+        for key, value in pend.items():
+            if key in (core.LIGHT_BRIGHTNESS, core.LIGHT_SPEED):
+                self.req_set_scalar.emit(key, value)
+
     # --- worker/listener slots ---
     def _on_device_state(self, state):
         self._banner.setText("DOIO not found — plug it in" if state == "no-device" else "")
@@ -144,6 +201,14 @@ class MainWindow(QMainWindow):
 
     def _on_snapshot(self, snap: Snapshot):
         self._snapshot = snap
+        self._effect.setCurrentIndex(min(snap.effect, self._effect.count() - 1))
+        inits = {core.LIGHT_BRIGHTNESS: min(snap.brightness, 200),
+                 core.LIGHT_SPEED: snap.speed, "hue": snap.hue, "sat": snap.sat}
+        for key, value in inits.items():
+            s = self._sliders[key]
+            s.blockSignals(True)
+            s.setValue(value)
+            s.blockSignals(False)
         self._refresh_controls()
 
     def _on_layer_pick(self, ly, checked):
