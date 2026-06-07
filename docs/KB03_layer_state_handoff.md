@@ -1,0 +1,225 @@
+# DOIO KB03-01K — Reading Layer State over HID: Handoff
+
+**Goal:** expose the macropad's *currently active layer* to the host over HID so a
+companion app can react to layer changes.
+
+**Bottom line up front:** the stock VIA protocol has **no command that returns the
+active layer index**. `switch_matrix_state` reports physical switch closures only,
+not `layer_state`. The reliable path is a custom QMK build (the device is
+DFU-flashable) that pushes layer state via `raw_hid_send`, or answers a custom
+`via_command_kb` sub-command. Everything below supports that conclusion and gives
+the concrete next steps.
+
+---
+
+## 1. Device identity (confirmed from this unit)
+
+From `system_profiler` + `probe.py` on the actual hardware:
+
+| Field | Value | Meaning |
+|---|---|---|
+| USB Vendor ID | `0xD010` | DOIO's real assigned VID (not the QMK default `0xFEED`) |
+| USB Product ID | `0x0301` | matches mainline `keyboards/doio/kb03` |
+| bcdDevice (Product Version) | `0x0001` | firmware `DEVICE_VER` = v0.0.1 |
+| Link speed | 12 Mb/s | USB Full Speed — true of both AVR and STM32F103, **not** decisive |
+| Power | 500 mA requested | standard, not decisive |
+
+**Interpretation:** this is the **current revision**, the one `via.py` is already
+written against — *not* the original ATmega32U4 unit (which enumerated with the
+QMK-default `0xFEED/0x6060` and used `qmk_rgblight`). The running USB descriptor
+**cannot** tell us whether the silicon is a genuine ST STM32F103 or a Geehy
+**APM32F103CBT6** clone; DOIO ships both interchangeably and they enumerate
+identically while running.
+
+### Hardware revisions seen in the wild
+
+| Revision | MCU | Matrix | Lighting | VIA IDs | QMK source |
+|---|---|---|---|---|---|
+| Original (2023) | ATmega32U4 | 4×8 declared | `qmk_rgblight` | `0xFEED/0x6060` | never upstreamed; keebmonkey `kb03-01.json` |
+| **Current (this unit)** | STM32F103 **or** APM32F103CBT6 | 1×5 | ws2812 **RGB matrix**, 10 LEDs | `0xD010/0x0301` | mainline `keyboards/doio/kb03` |
+
+The mainline "add support" issue (#21041) was closed as *not planned*, but a
+`keyboards/doio/kb03` board now exists in-tree (the kb16/kb30 siblings were the
+templates). DOIO moved the kb16 from 32U4 (rev1) to APM32F103CBT6 (rev2) during the
+32U4 shortage — same playbook likely applied to the kb03.
+
+---
+
+## 2. Definitive MCU disambiguation (do this if the exact die matters)
+
+The decisive signal is the **bootloader** VID/PID, not the running firmware. Put the
+device into flashing mode and re-run `probe.py` (or `lsusb` / `system_profiler`)
+against the device that appears:
+
+| Bootloader VID:PID | Identity | Implies |
+|---|---|---|
+| `1EAF:0003` ("LeafLabs Maple") | STM32duino bootloader | STM32F103 **or** APM32F103CBT6 — **most likely** |
+| `03EB:2FF4` ("Atmel Corp. ATmega32U4") | Atmel-DFU | old AVR revision |
+| `0483:DF11` ("STM Device in DFU Mode") | ST/APM factory DFU | unlikely (F103 ships no USB DFU) |
+
+Bootloader entry:
+- **AVR rev:** hold the upper-left key while plugging in (Caterina/Atmel-DFU).
+- **STM32F103/APM32 rev:** bridge BOOT0→VCC + tap RESET (or a boot button if DOIO
+  exposed one), then flash with `dfu-util`.
+
+### Zero-reboot confirmation (no bootloader needed)
+
+Just run `via.py` unmodified. It reads lighting on the **custom RGB-matrix channel
+`0x03`**, which only the current ws2812-RGB-matrix firmware answers. If it cleanly
+prints protocol version, **4 layers**, the keymap, both encoders, and valid
+brightness/effect/speed/color from channel `0x03`, you're confirmed on the
+STM32/APM32 build. If channel `0x03` returns `0xFF` while LEDs are clearly lit, it's
+the older `qmk_rgblight` build.
+
+---
+
+## 3. Why `switch_matrix_state` can't read the layer
+
+`switch_matrix_state` is `id_switch_matrix_state = 0x03`, a **sub-ID** under
+`id_get_keyboard_value = 0x02` (confirmed in `quantum/via.h`). Its handler returns
+the debounced **physical** matrix scan (`matrix_get_row()` per row), which runs
+*before* any layer/keymap logic.
+
+- `layer_state` is a separate `uint32_t` bitmask; it is never projected back into
+  the matrix.
+- On this firmware the back button is matrix **column 3** ("Layers" in `via.py`'s
+  `KEY_LABELS`), mapped to a layer keycode. Polling `switch_matrix_state` shows
+  column 3 *transiently* high while it's physically pressed — it does **not** hold a
+  value representing "layer 2 is active."
+- The handler is also **optional**; a minimal VIA build can return `id_unhandled`
+  (`0xFF`). Probe it: send `02 03` and check whether you get 1×5 row bytes or `0xFF`.
+  (`via.py.read_identity` already does the `02 01` uptime call — adding `02 03` is a
+  one-liner.)
+
+**Prior-art search result:** nobody uses `switch_matrix_state` for layer detection.
+Every published approach uses one of the methods in §4.
+
+---
+
+## 4. Recommended implementation (custom QMK build)
+
+The device is DFU-flashable, so this is the clean path. Base the build on the
+in-tree `keyboards/doio/kb03` (fall back to the kb30 lineage if needed). Pick **one**
+of the two readout mechanisms — push is simpler and lower-latency.
+
+### Option A — Push on change (preferred)
+
+Fires a report from the keyboard whenever the layer changes. This is the
+`qmk-hid-host` pattern; the `0xCC` magic first byte keeps it from colliding with
+VIA's own raw-HID replies, so the host can filter unsolicited layer reports from
+command responses.
+
+```c
+#include "raw_hid.h"   // RAW_ENABLE is implied by VIA_ENABLE
+
+#define HID_LAYER_REPORT 0xCC  // magic byte: outside VIA's command range
+
+layer_state_t layer_state_set_user(layer_state_t state) {
+    uint8_t report[RAW_EPSIZE] = {0};
+    report[0] = HID_LAYER_REPORT;
+    report[1] = get_highest_layer(state);          // top active layer
+    report[2] = (state >> 24) & 0xFF;              // full 32-bit mask, MSB..LSB
+    report[3] = (state >> 16) & 0xFF;
+    report[4] = (state >> 8)  & 0xFF;
+    report[5] =  state        & 0xFF;
+    raw_hid_send(report, RAW_EPSIZE);
+    return state;
+}
+```
+
+Host side: open the `0xFF60`/`0x61` interface (same one `via.py` uses), read
+reports, and act on any whose `data[0] == 0xCC`; ignore the rest (they're VIA
+command replies). `listen.py` is a starting point but currently decodes the
+keyboard/consumer interfaces — point it at the raw interface and filter on `0xCC`.
+
+### Option B — Pull on demand (`via_command_kb` override)
+
+Add a custom sub-ID under `id_get_keyboard_value`. Host sends `02 80`, reads back the
+layer. Stays inside the VIA protocol; no unsolicited traffic.
+
+```c
+#include "via.h"
+
+enum kb_keyboard_value_id {
+    id_get_active_layer = 0x80,   // custom; above the stock 0x01..0x05 range
+};
+
+// QMK's raw_hid_receive() (in quantum/via.c) calls via_command_kb() first;
+// returning true short-circuits the default VIA handler.
+// VERIFY this signature/semantics against your pinned QMK revision.
+bool via_command_kb(uint8_t *data, uint8_t length) {
+    if (data[0] == id_get_keyboard_value && data[1] == id_get_active_layer) {
+        data[2] = get_highest_layer(layer_state);
+        data[3] = (layer_state >> 24) & 0xFF;
+        data[4] = (layer_state >> 16) & 0xFF;
+        data[5] = (layer_state >> 8)  & 0xFF;
+        data[6] =  layer_state        & 0xFF;
+        return true;   // handled
+    }
+    return false;      // fall through to stock VIA
+}
+```
+
+### Build & flash notes
+
+- `rules.mk` needs the right bootloader for the ARM rev — `stm32duino` (or
+  `apm32-dfu` if it's the clone). Confirm via the §2 bootloader fingerprint first.
+- Flash with `dfu-util` after BOOT0+RESET entry.
+- The original AVR rev would instead use Caterina/Atmel-DFU and `qmk flash`.
+
+---
+
+## 5. Concrete next steps for Claude Code
+
+1. **Confirm firmware family (non-invasive):** run `via.py` as-is; expect VIA proto
+   version, 4 layers, keymap, 2 encoders, RGB-matrix lighting on channel `0x03`.
+2. **Confirm silicon (if it matters for flashing):** enter bootloader, re-run
+   `probe.py`, match the VID:PID against the §2 table.
+3. **Probe `switch_matrix_state`:** add a `02 03` call to `via.py`; record whether it
+   returns 1×5 row bytes or `0xFF`. (Confirms the §3 reasoning empirically; the
+   answer does not unblock layer readout either way.)
+4. **Read the layer-switch scheme:** `via.py.read_keymap` already dumps all layers;
+   inspect **column 3** ("Layers") per layer — `TO(n)` varying by layer = hard cycle;
+   `TT`/`MO` = momentary/tap-toggle. Documents how the firmware moves between layers.
+5. **Implement readout:** Option A (push) unless there's a reason to prefer pull.
+6. **Build & flash** per §4, using the bootloader confirmed in step 2.
+7. **Host integration:** extend `listen.py`/`via.py` to consume the layer signal
+   (filter `0xCC` reports for Option A, or send `02 80` for Option B).
+
+---
+
+## 6. Existing tooling in this repo
+
+| File | Purpose | Notes |
+|---|---|---|
+| `probe.py` | HID + libusb descriptor dump; QMK/VIA fingerprint verdict | defaults to `0xD010/0x0301`; flags `0xFF60` (VIA) and `0xFF31` (console) |
+| `via.py` | read/control over VIA raw HID (`0xFF60`) | reads proto/uptime/layers/keymap/encoders/RGB-matrix; can set lighting; uses `RGB_MATRIX_CHANNEL = 0x03` |
+| `listen.py` | live HID input reports while pressing keys/turning knobs | decodes keyboard + mouse/consumer interfaces; retarget to raw iface for `0xCC` push |
+| `main.py` | stub | placeholder |
+
+---
+
+## 7. Key references
+
+- VIA protocol enums: `qmk_firmware/quantum/via.h` (`id_get_keyboard_value = 0x02`,
+  `id_switch_matrix_state = 0x03`, channel IDs).
+- VIA handler / `via_command_kb`: `qmk_firmware/quantum/via.c`.
+- Raw HID: https://docs.qmk.fm/features/rawhid
+- Push-from-device prior art: https://github.com/zzeneg/qmk-hid-host
+  (`layer_state_set_user` + `raw_hid_send`, `0xCC` magic byte).
+- Pull-from-host prior art: https://cassaundra.org/blog/layerizer/
+- DOIO kb16 readme (bootloader fingerprints, AVR→APM32 revision history):
+  `qmk_firmware/keyboards/doio/kb16/readme.md`
+- mainline board: `qmk_firmware/keyboards/doio/kb03`
+- QMK flashing (STM32duino / apm32-dfu / dfu-util): https://docs.qmk.fm/flashing
+
+---
+
+## 8. Open questions / assumptions to verify
+
+- Exact silicon (ST vs APM32) — resolve via §2 bootloader fingerprint.
+- Whether stock firmware implements `switch_matrix_state` (`02 03`) — §5 step 3.
+- `via_command_kb` exact signature/short-circuit semantics on the pinned QMK
+  revision used for the build — verify before relying on Option B.
+- `EFFECTS[]` ordering in `via.py` is a best guess; verify against this firmware by
+  setting `--effect N` and observing the LEDs (not blocking for layer work).

@@ -9,6 +9,15 @@ def test_keyboard_report_extracts_mods_and_keys():
     assert keys == [0x04]
 
 
+def test_keyboard_report_extracts_report_id_prefixed_payload():
+    # QMK may prefix the same boot payload with a report ID. Treating byte0 as
+    # modifiers would turn normal KC_A into LCtrl+KC_A and break highlight match.
+    report = [0x01, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00]
+    mods, keys = decode_keyboard_report(report)
+    assert mods == 0x00
+    assert keys == [0x04]
+
+
 def test_keyboard_report_release_is_empty():
     report = [0x00] * 8
     mods, keys = decode_keyboard_report(report)

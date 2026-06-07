@@ -43,3 +43,18 @@ def test_set_color_sends_both_channels_in_one_command():
     assert body[2] == core.RGB_MATRIX_CHANNEL
     assert body[3] == core.LIGHT_COLOR
     assert body[4] == 170 and body[5] == 255
+
+
+def test_pressed_cols_reads_switch_matrix_state():
+    dev = FakeHID(replies=[[
+        core.GET_KEYBOARD_VALUE, core.SWITCH_MATRIX_STATE, 0x00, 0b10101]])
+    assert core.pressed_cols(dev) == [0, 2, 4]
+    body = dev.writes[0]
+    assert body[1] == core.GET_KEYBOARD_VALUE
+    assert body[2] == core.SWITCH_MATRIX_STATE
+    assert body[3] == 0x00  # switch_matrix_state offset
+
+
+def test_pressed_cols_returns_none_when_switch_matrix_state_unhandled():
+    dev = FakeHID(replies=[[0xFF] + [0] * 31])
+    assert core.pressed_cols(dev) is None

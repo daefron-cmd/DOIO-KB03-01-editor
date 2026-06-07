@@ -2,7 +2,7 @@
 emits snapshot/ack/device-state signals. moveToThread pattern — the handle is
 created in start() which runs on the worker thread."""
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 import core
 from model import key_id, enc_id
@@ -13,10 +13,16 @@ class ControlWorker(QObject):
     device_state = Signal(str)           # "" ok / "no-device"
     set_ack = Signal(object, bool)       # control_id, ok
     loading = Signal(bool)
+    matrix_state = Signal(str)           # "available" / "unsupported"
+    matrix_press = Signal(object)        # control_id from VIA switch_matrix_state
+    matrix_release = Signal(object)      # control_id from VIA switch_matrix_state
 
     def __init__(self):
         super().__init__()
         self._dev = None
+        self._matrix_timer = None
+        self._pressed_cols: set[int] = set()
+        self._matrix_state = ""
 
     @Slot()
     def start(self):
@@ -32,6 +38,7 @@ class ControlWorker(QObject):
             self.device_state.emit("no-device")
             return
         self.device_state.emit("")
+        self._start_matrix_poll()
         self.load_all()
 
     @Slot()
@@ -76,6 +83,44 @@ class ControlWorker(QObject):
     @Slot()
     def save(self):
         self._guarded(lambda: core.save_lighting(self._dev))
+
+    def _start_matrix_poll(self):
+        if self._matrix_timer is not None:
+            self._pressed_cols = set()
+            self._matrix_timer.start()
+            return
+        self._matrix_timer = QTimer(self)
+        self._matrix_timer.setInterval(30)
+        self._matrix_timer.timeout.connect(self._poll_matrix)
+        self._matrix_timer.start()
+
+    @Slot()
+    def _poll_matrix(self):
+        if self._dev is None:
+            return
+        try:
+            cols = core.pressed_cols(self._dev)
+        except Exception:  # noqa: BLE001 — device yanked mid-poll
+            self.device_state.emit("no-device")
+            if self._matrix_timer is not None:
+                self._matrix_timer.stop()
+            return
+        if cols is None:
+            if self._matrix_state != "unsupported":
+                self._matrix_state = "unsupported"
+                self.matrix_state.emit("unsupported")
+            if self._matrix_timer is not None:
+                self._matrix_timer.stop()
+            return
+        if self._matrix_state != "available":
+            self._matrix_state = "available"
+            self.matrix_state.emit("available")
+        pressed = set(cols)
+        for col in sorted(pressed - self._pressed_cols):
+            self.matrix_press.emit(key_id(col))
+        for col in sorted(self._pressed_cols - pressed):
+            self.matrix_release.emit(key_id(col))
+        self._pressed_cols = pressed
 
     def _guarded(self, fn) -> bool:
         if self._dev is None:

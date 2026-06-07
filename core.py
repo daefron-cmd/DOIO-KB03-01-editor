@@ -24,6 +24,7 @@ N_ENCODERS = 2
 # VIA command IDs
 GET_PROTOCOL_VERSION = 0x01
 GET_KEYBOARD_VALUE = 0x02
+SWITCH_MATRIX_STATE = 0x03
 DYNAMIC_KEYMAP_GET_KEYCODE = 0x04
 DYNAMIC_KEYMAP_SET_KEYCODE = 0x05
 CUSTOM_SET_VALUE = 0x07
@@ -83,6 +84,21 @@ def get_encoder(dev, layer: int, enc: int, direction: int) -> int:
 
 def _light(dev, value_id: int) -> list[int]:
     return cmd(dev, CUSTOM_GET_VALUE, RGB_MATRIX_CHANNEL, value_id)
+
+
+def pressed_cols(dev) -> list[int] | None:
+    """Return currently pressed matrix columns, or None if unsupported.
+
+    VIA's switch_matrix_state reports physical switch closures. On this device
+    that is a 1-row bitmask for columns 0..4.
+    """
+    r = cmd(dev, GET_KEYBOARD_VALUE, SWITCH_MATRIX_STATE, 0x00, timeout=100)
+    if not r or r[0] == 0xFF or len(r) < 4:
+        return None
+    if r[0] != GET_KEYBOARD_VALUE or r[1] != SWITCH_MATRIX_STATE:
+        return None
+    row = r[3]
+    return [col for col in range(N_COLS) if row & (1 << col)]
 
 
 def read_all(dev, layers: int = 4) -> Snapshot:

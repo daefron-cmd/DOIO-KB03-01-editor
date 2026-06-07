@@ -17,9 +17,14 @@ CONSUMER_USAGE_OFFSET = 1
 
 
 def decode_keyboard_report(report: list[int]) -> tuple[int, list[int]]:
-    """(modifiers, [keycodes]) from a boot-style keyboard report."""
-    mods = report[0]
-    keys = [u for u in report[2:8] if u]
+    """(modifiers, [keycodes]) from a keyboard report.
+
+    QMK devices may expose either a plain 8-byte boot report
+    [mods, reserved, key1..key6] or the same payload prefixed by a report ID.
+    """
+    offset = 1 if len(report) >= 9 else 0
+    mods = report[offset]
+    keys = [u for u in report[offset + 2:offset + 8] if u]
     return mods, keys
 
 
@@ -52,6 +57,7 @@ class Listener(QObject):
 
     def _open(self):
         denied = False
+        keyboard_opened = False
         for d in hid.enumerate(VID, PID):
             up, u = d["usage_page"], d["usage"]
             kind = ("keyboard" if (up, u) == (0x01, 0x06)
@@ -64,9 +70,13 @@ class Listener(QObject):
                 dev.open_path(d["path"])
                 dev.set_nonblocking(1)
                 self._devs.append((kind, dev))
+                if kind == "keyboard":
+                    keyboard_opened = True
             except Exception:  # noqa: BLE001 — keyboard iface needs permission
                 if kind == "keyboard":
                     denied = True
+        if not keyboard_opened:
+            denied = True
         self.permission_state.emit("input-monitoring-denied" if denied else "")
 
     def _loop(self):
