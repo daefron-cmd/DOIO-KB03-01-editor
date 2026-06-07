@@ -55,7 +55,7 @@ supported. See `docs/KB03_layer_state_handoff.md` for revision details.
 
 Threads:
 
-- **UI thread** — `MainWindow`, painters, the listener report queue's consumers.
+- **UI thread** — `MainWindow`, painters, slots that receive worker/listener signals.
 - **Control thread** — `ControlWorker`. Owns the `0xFF60` handle. UI talks to it
   exclusively via emitted signals (queued cross-thread delivery), so the handle
   is never touched from the UI thread.
@@ -73,10 +73,13 @@ Requires Python 3.13 (`.python-version`). Dependencies are listed in
 `pyproject.toml`: `hidapi`, `libusb-package`, `pyusb`, `PySide6`.
 
 On first run macOS will prompt for **Input Monitoring** permission for the
-process reading the keyboard HID interface — without it, the consumer interface
-still works (so the knob still highlights) but key presses won't. If the prompt
-never appears, grant permission manually under System Settings → Privacy &
-Security → Input Monitoring.
+keyboard HID interface. Without it, key highlights still work because the VIA
+`switch_matrix_state` poll on the vendor `0xFF60` channel isn't gated by macOS,
+and the consumer interface (volume knob, media keys) opens without IM either.
+What you lose with IM denied is left/right modifier disambiguation and rotation
+feedback for encoders bound to non-media keycodes. If the prompt never appears,
+grant permission manually under System Settings → Privacy & Security → Input
+Monitoring.
 
 ### Probing an unknown device
 
@@ -133,8 +136,14 @@ swatch.
   device probe while `main.py` is open, or vice versa.
 - **No real active-layer query.** VIA has no command that returns the current
   active layer index; `inferred_layer.py` reconstructs it from physical matrix
-  events and the `TO/MO/TG/DF` keycodes it sees in the snapshot. Anything that
-  changes the layer outside of those keycodes is invisible.
+  events and the `TO/MO/TG/DF` keycodes in the snapshot. The app boots assuming
+  hardware-layer 0, and the small layer-LED dot in the inspector mirrors the
+  *host-side* inferred layer. If hardware and host start misaligned, click the
+  GUI's layer radio buttons until the on-screen dot color matches the physical
+  Layers-key LED — from then on, pressing the hardware Layers key (col 3)
+  advances both together via the matrix poll. Doing better would mean a custom
+  QMK build that pushes layer state via `raw_hid_send`; see
+  `docs/KB03_layer_state_handoff.md`.
 - **Norwegian-Mac symbol catalog uses Option combos** (`A+KC_8` for `[`, etc.).
   A window manager that swallows global `⌥` hotkeys (e.g. AeroSpace) will
   intercept them before any text field — verify with the WM disabled if a
@@ -145,9 +154,12 @@ swatch.
 - **Effect set is firmware-fixed.** Indices 0..31 are whatever was compiled into
   the QMK image. Adding a new pattern means recompiling and flashing the
   firmware, not changing this app. See `docs/KB03_led_findings.md`.
-- **macOS only.** The packaging, the `Listener` permission prompt, and several
-  small assumptions in `core.open_raw` are Mac-specific. Linux likely runs but
-  is untested.
+- **macOS only.** The `.app` packaging is Mac-specific, and the Input
+  Monitoring handling and banner text assume the macOS HID permission model
+  (the listener observes a denied open; the OS prompt itself comes from
+  macOS, not from the app). The transport (`core.py` + `hidapi`) is
+  platform-neutral — Linux likely runs with appropriate udev rules but is
+  untested.
 
 ## More docs
 
