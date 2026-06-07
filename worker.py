@@ -12,6 +12,7 @@ class ControlWorker(QObject):
     snapshot_ready = Signal(object)      # Snapshot
     device_state = Signal(str)           # "" ok / "no-device"
     set_ack = Signal(object, bool)       # control_id, ok
+    lighting_saved = Signal(bool)
     loading = Signal(bool)
     matrix_state = Signal(str)           # "available" / "unsupported"
     matrix_press = Signal(object)        # control_id from VIA switch_matrix_state
@@ -82,7 +83,8 @@ class ControlWorker(QObject):
 
     @Slot()
     def save(self):
-        self._guarded(lambda: core.save_lighting(self._dev))
+        self.lighting_saved.emit(
+            self._guarded(lambda: core.save_lighting(self._dev)))
 
     def _start_matrix_poll(self):
         if self._matrix_timer is not None:

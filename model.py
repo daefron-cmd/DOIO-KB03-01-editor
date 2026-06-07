@@ -23,3 +23,22 @@ class Snapshot:
     speed: int
     hue: int
     sat: int
+
+
+@dataclass(frozen=True)
+class LightingState:
+    brightness: int
+    effect: int
+    speed: int
+    hue: int
+    sat: int
+
+    @classmethod
+    def from_snapshot(cls, snap: Snapshot) -> "LightingState":
+        return cls(
+            brightness=snap.brightness,
+            effect=snap.effect,
+            speed=snap.speed,
+            hue=snap.hue,
+            sat=snap.sat,
+        )

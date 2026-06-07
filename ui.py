@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 import core
 from catalog import CATALOG, render, resolve_controls
 from inferred_layer import InferredLayerState
-from model import Snapshot, key_id, enc_id
+from model import LightingState, Snapshot, key_id, enc_id
 
 ROOT = Path(__file__).resolve().parent
 
@@ -223,6 +223,17 @@ QLabel#layerStatus {
     color: #3d3a35;
     font-weight: 700;
 }
+QLabel#lightingStatus {
+    color: #686257;
+    font-size: 12px;
+    font-weight: 700;
+}
+QLabel#colorSwatch {
+    background: #222;
+    border: 1px solid #746b5d;
+    border-radius: 7px;
+    min-height: 24px;
+}
 QPushButton {
     background: #262521;
     border: 1px solid #141411;
@@ -236,6 +247,14 @@ QPushButton:hover {
 }
 QPushButton:pressed {
     background: #161512;
+}
+QPushButton#secondaryButton {
+    background: #fffdf8;
+    border: 1px solid #bdb4a6;
+    color: #27231d;
+}
+QPushButton#secondaryButton:hover {
+    background: #f3ecdd;
 }
 QPushButton[deviceControl="true"] {
     background: rgba(255, 247, 216, 128);
@@ -388,6 +407,9 @@ class MainWindow(QMainWindow):
         self._permission_state = ""
         self._matrix_state = ""
         self._is_loading = False
+        self._saved_lighting: LightingState | None = None
+        self._lighting: LightingState | None = None
+        self._lighting_saving = False
 
         self.setMinimumSize(1060, 720)
         root = QWidget()
@@ -469,6 +491,7 @@ class MainWindow(QMainWindow):
         control.loading.connect(self._on_loading)
         control.snapshot_ready.connect(self._on_snapshot)
         control.set_ack.connect(self._on_set_ack)
+        control.lighting_saved.connect(self._on_lighting_saved)
         control.matrix_state.connect(self._on_matrix_state)
         control.matrix_press.connect(self._on_matrix_press)
         control.matrix_release.connect(self._on_matrix_release)
@@ -564,11 +587,9 @@ class MainWindow(QMainWindow):
         self._effect = QComboBox()
         for i, name in enumerate(EFFECTS):
             self._effect.addItem(f"{i} — {name}", i)
-        self._effect.activated.connect(
-            lambda _i: self.req_set_scalar.emit(
-                core.LIGHT_EFFECT, self._effect.currentData()))
+        self._effect.activated.connect(self._on_effect_pick)
         grid.addWidget(QLabel("Effect"), 0, 0)
-        grid.addWidget(self._effect, 0, 1)
+        grid.addWidget(self._effect, 0, 1, 1, 2)
 
         self._sliders = {}
         self._slider_values = {}
@@ -596,10 +617,28 @@ class MainWindow(QMainWindow):
             grid.addWidget(s, r, 1)
             grid.addWidget(value, r, 2)
 
-        save = QPushButton("Save to keyboard")
-        save.clicked.connect(self.req_save)   # signal→slot across threads = queued
-        grid.addWidget(save, len(specs) + 1, 1, 1, 2)
+        self._color_swatch = QLabel("")
+        self._color_swatch.setObjectName("colorSwatch")
+        grid.addWidget(QLabel("Preview"), len(specs) + 1, 0)
+        grid.addWidget(self._color_swatch, len(specs) + 1, 1, 1, 2)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self._revert_lighting_btn = QPushButton("Revert")
+        self._revert_lighting_btn.setObjectName("secondaryButton")
+        self._revert_lighting_btn.clicked.connect(self._revert_lighting)
+        self._save_lighting_btn = QPushButton("Save lighting")
+        self._save_lighting_btn.clicked.connect(self._save_lighting)
+        actions.addWidget(self._revert_lighting_btn)
+        actions.addWidget(self._save_lighting_btn)
+        grid.addLayout(actions, len(specs) + 2, 1, 1, 2)
+
+        self._lighting_status = QLabel("Lighting not loaded")
+        self._lighting_status.setObjectName("lightingStatus")
+        self._lighting_status.setWordWrap(True)
+        grid.addWidget(self._lighting_status, len(specs) + 3, 0, 1, 3)
         self._inspector_v.addLayout(grid)
+        self._refresh_lighting_ui()
 
     def _add_section_label(self, text: str):
         if self._inspector_v.count():
@@ -613,7 +652,17 @@ class MainWindow(QMainWindow):
 
     def _on_slider(self, key, value):
         self._slider_values[key].setText(str(value))
+        if self._lighting is not None:
+            self._lighting = self._lighting_with(key, value)
+            self._refresh_lighting_ui()
         self._pending[key] = value         # coalesce to latest; flushed at 25 Hz
+
+    def _on_effect_pick(self, _index):
+        effect = self._effect.currentData()
+        if self._lighting is not None:
+            self._lighting = self._lighting_with("effect", effect)
+            self._refresh_lighting_ui()
+        self.req_set_scalar.emit(core.LIGHT_EFFECT, effect)
 
     def _flush_sliders(self):
         if not self._pending:
@@ -627,6 +676,87 @@ class MainWindow(QMainWindow):
         for key, value in pend.items():
             if key in (core.LIGHT_BRIGHTNESS, core.LIGHT_SPEED):
                 self.req_set_scalar.emit(key, value)
+
+    def _lighting_with(self, key, value) -> LightingState:
+        state = self._lighting
+        if state is None:
+            state = LightingState(0, 0, 0, 0, 0)
+        values = {
+            "brightness": state.brightness,
+            "effect": state.effect,
+            "speed": state.speed,
+            "hue": state.hue,
+            "sat": state.sat,
+        }
+        if key == core.LIGHT_BRIGHTNESS:
+            values["brightness"] = value
+        elif key == core.LIGHT_SPEED:
+            values["speed"] = value
+        else:
+            values[key] = value
+        return LightingState(**values)
+
+    def _save_lighting(self):
+        if self._lighting is None or self._lighting_saving:
+            return
+        self._lighting_saving = True
+        self._refresh_lighting_ui()
+        self.req_save.emit()   # signal→slot across threads = queued
+
+    def _revert_lighting(self):
+        if self._saved_lighting is None:
+            return
+        self._apply_lighting(self._saved_lighting, live_preview=True)
+
+    def _apply_lighting(self, state: LightingState, live_preview: bool):
+        self._lighting = state
+        effect_index = min(state.effect, self._effect.count() - 1)
+        self._effect.blockSignals(True)
+        self._effect.setCurrentIndex(effect_index)
+        self._effect.blockSignals(False)
+        values = {
+            core.LIGHT_BRIGHTNESS: min(state.brightness, 200),
+            core.LIGHT_SPEED: state.speed,
+            "hue": state.hue,
+            "sat": state.sat,
+        }
+        for key, value in values.items():
+            slider = self._sliders[key]
+            slider.blockSignals(True)
+            slider.setValue(value)
+            slider.blockSignals(False)
+            self._slider_values[key].setText(str(value))
+        if live_preview:
+            self.req_set_scalar.emit(core.LIGHT_EFFECT, state.effect)
+            self.req_set_scalar.emit(core.LIGHT_BRIGHTNESS, min(state.brightness, 200))
+            self.req_set_scalar.emit(core.LIGHT_SPEED, state.speed)
+            self.req_set_color.emit(state.hue, state.sat)
+        self._refresh_lighting_ui()
+
+    def _refresh_lighting_ui(self):
+        if not hasattr(self, "_lighting_status"):
+            return
+        loaded = self._lighting is not None
+        dirty = loaded and self._lighting != self._saved_lighting
+        self._save_lighting_btn.setEnabled(loaded and dirty and not self._lighting_saving)
+        self._revert_lighting_btn.setEnabled(loaded and dirty and not self._lighting_saving)
+        if self._lighting_saving:
+            self._save_lighting_btn.setText("Saving...")
+            self._lighting_status.setText("Saving lighting to keyboard")
+        else:
+            self._save_lighting_btn.setText("Save lighting")
+            if not loaded:
+                self._lighting_status.setText("Lighting not loaded")
+            elif dirty:
+                self._lighting_status.setText("Live preview active; not saved yet")
+            else:
+                self._lighting_status.setText("Lighting saved")
+        if loaded:
+            color = QColor.fromHsv(self._sliders["hue"].value(),
+                                   self._sliders["sat"].value(), 220)
+            self._color_swatch.setStyleSheet(
+                "background: %s; border: 1px solid #746b5d; border-radius: 7px;"
+                % color.name())
 
     # --- worker/listener slots ---
     def _on_device_state(self, state):
@@ -671,16 +801,24 @@ class MainWindow(QMainWindow):
     def _on_snapshot(self, snap: Snapshot):
         self._snapshot = snap
         self._inferred_layer.layer_count = len(snap.keymap)
-        self._effect.setCurrentIndex(min(snap.effect, self._effect.count() - 1))
-        inits = {core.LIGHT_BRIGHTNESS: min(snap.brightness, 200),
-                 core.LIGHT_SPEED: snap.speed, "hue": snap.hue, "sat": snap.sat}
-        for key, value in inits.items():
-            s = self._sliders[key]
-            s.blockSignals(True)
-            s.setValue(value)
-            s.blockSignals(False)
-            self._slider_values[key].setText(str(value))
+        loaded_lighting = LightingState.from_snapshot(snap)
+        self._saved_lighting = LightingState(
+            brightness=min(loaded_lighting.brightness, 200),
+            effect=loaded_lighting.effect,
+            speed=loaded_lighting.speed,
+            hue=loaded_lighting.hue,
+            sat=loaded_lighting.sat,
+        )
+        self._apply_lighting(self._saved_lighting, live_preview=False)
         self._refresh_controls()
+
+    def _on_lighting_saved(self, ok: bool):
+        self._lighting_saving = False
+        if ok and self._lighting is not None:
+            self._saved_lighting = self._lighting
+        elif not ok:
+            self._banner.setText("Lighting save failed — reconnecting may be needed")
+        self._refresh_lighting_ui()
 
     def _on_layer_pick(self, ly, checked):
         if checked:
