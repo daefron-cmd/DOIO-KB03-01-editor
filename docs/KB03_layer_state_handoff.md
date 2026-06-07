@@ -43,6 +43,33 @@ The mainline "add support" issue (#21041) was closed as *not planned*, but a
 templates). DOIO moved the kb16 from 32U4 (rev1) to APM32F103CBT6 (rev2) during the
 32U4 shortage — same playbook likely applied to the kb03.
 
+### Vendor download files
+
+The vendor-provided `/Users/vegar/Downloads/kb03-01.json` is a VIA definition for
+the older public identity:
+
+- name: `DOIO`
+- VID/PID: `0xFEED/0x6060`
+- lighting metadata: `qmk_rgblight`
+- matrix: `4` rows × `8` cols
+- layout entries include `0,0`, `0,1`, `0,2`, `0,3`, `0,4`, `0,5`, `0,6`,
+  `1,5`, and `1,6`
+
+That file explains the old public VIA layout, but it does not match this unit's
+live USB identity or observed RGB-matrix channel behavior.
+
+The vendor-provided `/Users/vegar/Downloads/kb09-01.bin` is an ARM firmware image
+despite the `kb09` filename. Embedded strings identify it as QMK-builder firmware
+with `VID: 0xFEED(qmkbuilder) PID: 0x6060(DOIO)`, build date `Sep 24 2022`, and
+QMK RGB Matrix strings including `rgb_matrix_config.mode`,
+`rgb_matrix_config.hsv.h`, `rgb_matrix_config.hsv.s`, `rgb_matrix_config.hsv.v`,
+and `rgb_matrix_config.speed`.
+
+Treat both files as evidence for the older vendor/QMK-builder firmware family,
+not as source of truth for the current `0xD010/0x0301` hardware. Do not flash
+`kb09-01.bin` to this KB03 unless the target model, MCU, and bootloader match are
+confirmed separately.
+
 ---
 
 ## 2. Definitive MCU disambiguation (do this if the exact die matters)

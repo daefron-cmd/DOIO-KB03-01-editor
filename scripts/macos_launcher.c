@@ -60,7 +60,7 @@ int main(void) {
         return 4;
     }
 
-    execl("/opt/homebrew/bin/uv", "uv", "run", "python", "main.py", NULL);
+    execlp("uv", "uv", "run", "python", "main.py", NULL);
     fprintf(stderr, "exec uv failed: %s\n", strerror(errno));
     return 5;
 }

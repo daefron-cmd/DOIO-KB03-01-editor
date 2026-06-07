@@ -27,13 +27,87 @@ ENCODERS = [(1, 0), (1, 1), (0, 0), (0, 1)]
 ENC_NAMES = {1: "Outer ring", 0: "Inner knob"}
 DIR_NAMES = {0: "CCW", 1: "CW"}
 
-# index -> name. Lighting control + all sliders verified working on hardware
-# 2026-05-29 (Task 11), but the per-index effect NAMES are still best-guess and
-# were not individually confirmed (cosmetic; low priority on this unit).
+# QMK RGB Matrix enum names. Verified on this KB03 with
+# scripts/probe_led_effects.py: indices 0..31 read back as requested.
 EFFECTS = [
-    "SOLID_COLOR_OFF/NONE", "SOLID_COLOR", "GRADIENT_UP_DOWN",
-    "GRADIENT_LEFT_RIGHT", "BREATHING", "BAND_SAT", "BAND_VAL",
-]  # extend/correct per Task 11
+    "RGB_MATRIX_NONE",
+    "RGB_MATRIX_SOLID_COLOR",
+    "RGB_MATRIX_ALPHAS_MODS",
+    "RGB_MATRIX_GRADIENT_UP_DOWN",
+    "RGB_MATRIX_GRADIENT_LEFT_RIGHT",
+    "RGB_MATRIX_BREATHING",
+    "RGB_MATRIX_BAND_SAT",
+    "RGB_MATRIX_BAND_VAL",
+    "RGB_MATRIX_BAND_PINWHEEL_SAT",
+    "RGB_MATRIX_BAND_PINWHEEL_VAL",
+    "RGB_MATRIX_BAND_SPIRAL_SAT",
+    "RGB_MATRIX_BAND_SPIRAL_VAL",
+    "RGB_MATRIX_CYCLE_ALL",
+    "RGB_MATRIX_CYCLE_LEFT_RIGHT",
+    "RGB_MATRIX_CYCLE_UP_DOWN",
+    "RGB_MATRIX_CYCLE_OUT_IN",
+    "RGB_MATRIX_CYCLE_OUT_IN_DUAL",
+    "RGB_MATRIX_RAINBOW_MOVING_CHEVRON",
+    "RGB_MATRIX_CYCLE_PINWHEEL",
+    "RGB_MATRIX_CYCLE_SPIRAL",
+    "RGB_MATRIX_DUAL_BEACON",
+    "RGB_MATRIX_RAINBOW_BEACON",
+    "RGB_MATRIX_RAINBOW_PINWHEELS",
+    "RGB_MATRIX_FLOWER_BLOOMING",
+    "RGB_MATRIX_RAINDROPS",
+    "RGB_MATRIX_JELLYBEAN_RAINDROPS",
+    "RGB_MATRIX_HUE_BREATHING",
+    "RGB_MATRIX_HUE_PENDULUM",
+    "RGB_MATRIX_HUE_WAVE",
+    "RGB_MATRIX_PIXEL_FRACTAL",
+    "RGB_MATRIX_PIXEL_FLOW",
+    "RGB_MATRIX_PIXEL_RAIN",
+]
+
+# Photo-calibrated LED color samples from hue 0..255 in steps of 17 at
+# saturation 255. These intentionally model the KB03 LEDs/case diffusion rather
+# than an ideal HSV color wheel.
+LED_HUE_SAMPLES = [
+    (0, "#ff2a11"),
+    (17, "#ff2a7a"),
+    (34, "#d02cff"),
+    (51, "#9b2cff"),
+    (68, "#522dff"),
+    (85, "#1f54ff"),
+    (102, "#00a4ff"),
+    (119, "#00d9ff"),
+    (136, "#00d9d0"),
+    (153, "#00d584"),
+    (170, "#1fd556"),
+    (187, "#83df3d"),
+    (204, "#d8ec3f"),
+    (221, "#ffd03a"),
+    (238, "#ff8123"),
+    (255, "#ff2a11"),
+]
+
+
+class RoundIndicator(QWidget):
+    def __init__(self, color: str, border: str, parent=None):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self._border = QColor(border)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+    def set_colors(self, color: str, border: str):
+        self._color = QColor(color)
+        self._border = QColor(border)
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen_width = max(1, round(min(self.width(), self.height()) * 0.12))
+        painter.setPen(QPen(self._border, pen_width))
+        painter.setBrush(self._color)
+        inset = pen_width / 2
+        painter.drawEllipse(self.rect().adjusted(
+            round(inset), round(inset), -round(inset), -round(inset)))
 
 
 class DevicePanel(QWidget):
@@ -46,7 +120,7 @@ class DevicePanel(QWidget):
         self._image.hide()
         self._image.setScaledContents(True)
         self._controls: dict[tuple, tuple[QPushButton, QRect, QRect]] = {}
-        self._indicators: dict[str, tuple[QLabel, QRect]] = {}
+        self._indicators: dict[str, tuple[RoundIndicator, QRect]] = {}
         self._active: tuple | None = None
         self.setObjectName("devicePanel")
         self.setMinimumSize(560, 560)
@@ -81,8 +155,7 @@ class DevicePanel(QWidget):
         return btn
 
     def add_indicator(self, name: str, source_rect: QRect):
-        dot = QLabel(self)
-        dot.setStyleSheet(_LAYER_LED_STYLE.format(color="#d33", border="#661"))
+        dot = RoundIndicator("#d33", "#661", self)
         self._indicators[name] = (dot, source_rect)
         self._layout_children()
         return dot
@@ -357,14 +430,6 @@ QSlider::handle:horizontal {
 }
 """
 
-_LAYER_LED_STYLE = """
-QLabel {{
-    background: {color};
-    border: 2px solid {border};
-    border-radius: 999px;
-}}
-"""
-
 _LAYER_LED_COLORS = {
     0: ("#ff3030", "#7a0000"),
     1: ("#39d353", "#116322"),
@@ -378,6 +443,45 @@ _LAYER_NAMES = {
     2: "Layer 2 / blue",
     3: "Layer 3 / white",
 }
+
+
+def _mix(a: int, b: int, t: float) -> int:
+    return round(a + (b - a) * t)
+
+
+def calibrated_led_color(hue: int, sat: int, brightness: int) -> QColor:
+    hue = max(0, min(255, hue))
+    sat = max(0, min(255, sat))
+    brightness = max(0, min(200, brightness))
+    # The KB03 hue wheel runs opposite the photographed sample order on each
+    # side of the midpoint: 0, 128 and 255 line up, but 64 behaves like 192.
+    lookup_hue = 255 if hue == 255 else (256 - hue) % 256
+    samples = LED_HUE_SAMPLES
+    lo_h, lo_hex = samples[0]
+    hi_h, hi_hex = samples[-1]
+    for index in range(len(samples) - 1):
+        if samples[index][0] <= lookup_hue <= samples[index + 1][0]:
+            lo_h, lo_hex = samples[index]
+            hi_h, hi_hex = samples[index + 1]
+            break
+    span = max(1, hi_h - lo_h)
+    t = (lookup_hue - lo_h) / span
+    lo = QColor(lo_hex)
+    hi = QColor(hi_hex)
+    r = _mix(lo.red(), hi.red(), t)
+    g = _mix(lo.green(), hi.green(), t)
+    b = _mix(lo.blue(), hi.blue(), t)
+
+    # Desaturate toward the photographed "white LED through smoky case" tone,
+    # then apply the same 0..200 brightness cap the hardware UI uses.
+    white = QColor("#fff7e5")
+    sat_t = sat / 255
+    value_t = brightness / 200
+    return QColor(
+        round(_mix(white.red(), r, sat_t) * value_t),
+        round(_mix(white.green(), g, sat_t) * value_t),
+        round(_mix(white.blue(), b, sat_t) * value_t),
+    )
 
 
 class MainWindow(QMainWindow):
@@ -564,7 +668,7 @@ class MainWindow(QMainWindow):
             self._control_buttons[cid] = btn
 
         self._layer_led = self._device_panel.add_indicator(
-            "layer", QRect(664, 808, 44, 44))
+            "layer", QRect(664, 802, 50, 50))
         self._workspace_v.addWidget(self._device_panel, stretch=1)
 
     def _build_editor(self):
@@ -752,8 +856,11 @@ class MainWindow(QMainWindow):
             else:
                 self._lighting_status.setText("Lighting saved")
         if loaded:
-            color = QColor.fromHsv(self._sliders["hue"].value(),
-                                   self._sliders["sat"].value(), 220)
+            color = calibrated_led_color(
+                self._sliders["hue"].value(),
+                self._sliders["sat"].value(),
+                self._sliders[core.LIGHT_BRIGHTNESS].value(),
+            )
             self._color_swatch.setStyleSheet(
                 "background: %s; border: 1px solid #746b5d; border-radius: 7px;"
                 % color.name())
@@ -913,7 +1020,7 @@ class MainWindow(QMainWindow):
         if dot is None:
             return
         color, border = _LAYER_LED_COLORS.get(layer, ("#ffd33d", "#7a5c00"))
-        dot.setStyleSheet(_LAYER_LED_STYLE.format(color=color, border=border))
+        dot.set_colors(color, border)
         name = _LAYER_NAMES.get(layer, f"Layer {layer} / yellow")
         self._layer_status.setText(f"Selected layer: {name}")
 
