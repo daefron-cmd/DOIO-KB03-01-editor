@@ -5,7 +5,7 @@
 // Outer-ring (encoder index 1) MX-Master scroll emulation. The outer
 // ring fires custom keycodes OUTER_SCROLL_CCW/CW. process_record_user
 // routes them either to a raw_hid SCROLL_PING when the host is ready,
-// or falls back to MS_WHLU/MS_WHLD via tap_code.
+// or falls back to a direct HID wheel report.
 //
 // See docs/superpowers/specs/2026-06-08-outer-encoder-mx-scroll-design.md
 
@@ -24,6 +24,12 @@ enum custom_keycodes {
     OUTER_SCROLL_CCW = SAFE_RANGE,
     OUTER_SCROLL_CW,
 };
+
+static void send_wheel_report(bool cw) {
+    report_mouse_t report = {0};
+    report.v = cw ? -1 : 1;
+    host_mouse_send(&report);
+}
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     [_BASE] = LAYOUT(
@@ -72,12 +78,10 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
                 if (inertia_is_host_ready()) {
                     inertia_send_scroll_ping(cw);
                 } else {
-                    // tap_code with the default 0ms delay can race the
-                    // mouse_task tick: register sets the wheel field,
-                    // unregister clears it, and the deferred HID dispatch
-                    // sees wheel=0. A small delay between register and
-                    // unregister lets the task emit the wheel impulse.
-                    tap_code_delay(cw ? MS_WHLD : MS_WHLU, 10);
+                    // Avoid mousekey/tap_code dispatch here. Modern QMK can
+                    // defer mousekey sends until after tap release, which
+                    // collapses the wheel impulse to a zero-delta report.
+                    send_wheel_report(cw);
                 }
             }
             return false;

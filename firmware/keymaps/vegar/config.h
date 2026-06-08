@@ -42,3 +42,13 @@
 // short-circuits with raw_hid_send. Set it to 0 so fast MagSpeed
 // spins don't get throttled.
 #define ENCODER_MAP_KEY_DELAY 0
+
+// Time (ms) between register_code and unregister_code in tap_code, and
+// between encoder_map key-down and key-up for non-custom keycodes.
+// Default 0 collides on the host's HID poll window: a wheel report with
+// v=±1 and a follow-up report with v=0 land in the same poll, netting
+// to a zero-delta scroll event in macOS. 10 ms is enough to keep the
+// two reports in distinct poll windows so the wheel impulse survives.
+// Affects every tap_code() call AND every encoder_map wheel binding
+// (MS_WHLU/D on _BASE inner, etc.), not just our outer-ring handler.
+#define TAP_CODE_DELAY 10
