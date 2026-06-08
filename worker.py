@@ -1,90 +1,131 @@
-"""Control worker: owns the 0xFF60 handle, runs core calls on its own thread,
-emits snapshot/ack/device-state signals. moveToThread pattern — the handle is
-created in start() which runs on the worker thread."""
+"""ControlWorker: thread-bound owner of the VIA command/reply lifecycle.
+
+The HID handle itself is owned by HidIoWorker. ControlWorker submits
+requests via io.send_request(builder), receives results via Future,
+and emits the same Qt signals it always did.
+"""
+
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 import core
-from model import key_id, enc_id
+from model import Snapshot, key_id, enc_id
 
 
 class ControlWorker(QObject):
-    snapshot_ready = Signal(object)      # Snapshot
-    device_state = Signal(str)           # "" ok / "no-device"
-    set_ack = Signal(object, bool)       # control_id, ok
+    snapshot_ready = Signal(object)
+    device_state = Signal(str)
+    set_ack = Signal(object, bool)
     lighting_saved = Signal(bool)
     loading = Signal(bool)
-    matrix_state = Signal(str)           # "available" / "unsupported"
-    matrix_press = Signal(object)        # control_id from VIA switch_matrix_state
-    matrix_release = Signal(object)      # control_id from VIA switch_matrix_state
+    matrix_state = Signal(str)
+    matrix_press = Signal(object)
+    matrix_release = Signal(object)
 
-    def __init__(self):
+    REPLY_TIMEOUT_S = 1.0
+
+    def __init__(self, io):
         super().__init__()
-        self._dev = None
+        self._io = io
         self._matrix_timer = None
         self._pressed_cols: set[int] = set()
         self._matrix_state = ""
 
+    def _request(self, payload: list[int]) -> list[int] | None:
+        fut = self._io.send_request(payload)
+        try:
+            return fut.result(timeout=self.REPLY_TIMEOUT_S)
+        except FutureTimeoutError:
+            # Timed-out future is still in HidIoWorker's queues. Remove
+            # it so a late reply doesn't get mis-attributed.
+            self._io.cancel(fut)
+            self.device_state.emit("no-device")
+            return None
+        except Exception:  # TransportClosedError, IdUnhandledError, etc.
+            self.device_state.emit("no-device")
+            return None
+
     @Slot()
     def start(self):
-        self._open_and_load()
-
-    @Slot()
-    def reconnect(self):
-        self._open_and_load()
-
-    def _open_and_load(self):
-        self._dev = core.open_raw()
-        if self._dev is None:
-            self.device_state.emit("no-device")
-            return
-        self.device_state.emit("")
+        # HidIoWorker opens the handle on its own thread; we just wait for it.
         self._start_matrix_poll()
         self.load_all()
 
     @Slot()
+    def reconnect(self):
+        self.start()
+
+    @Slot()
     def load_all(self):
-        if self._dev is None:
-            return
         self.loading.emit(True)
         try:
-            snap = core.read_all(self._dev)
-        except Exception:  # noqa: BLE001 — device yanked mid-read
+            keymap = []
+            for ly in range(4):
+                row = []
+                for c in range(core.N_COLS):
+                    r = self._request(core.build_get_key(ly, c))
+                    if r is None:
+                        self.loading.emit(False)
+                        return
+                    row.append(core.parse_keycode_reply(r))
+                keymap.append(row)
+            encoders = []
+            for ly in range(4):
+                lay = []
+                for e in range(core.N_ENCODERS):
+                    pair = []
+                    for d in range(2):
+                        r = self._request(core.build_get_encoder(ly, e, d))
+                        if r is None:
+                            self.loading.emit(False)
+                            return
+                        pair.append(core.parse_keycode_reply(r))
+                    lay.append(pair)
+                encoders.append(lay)
+            b = self._request(core.build_light_get(core.LIGHT_BRIGHTNESS))
+            e = self._request(core.build_light_get(core.LIGHT_EFFECT))
+            s = self._request(core.build_light_get(core.LIGHT_SPEED))
+            c = self._request(core.build_light_get(core.LIGHT_COLOR))
+            if any(x is None for x in (b, e, s, c)):
+                self.loading.emit(False)
+                return
+            snap = Snapshot(
+                keymap=keymap, encoders=encoders,
+                brightness=b[3], effect=e[3], speed=s[3],
+                hue=c[3], sat=c[4],
+            )
+        finally:
             self.loading.emit(False)
-            self.device_state.emit("no-device")
-            return
-        self.loading.emit(False)
         self.snapshot_ready.emit(snap)
 
     @Slot(int, int, int)
     def set_key(self, layer, col, keycode):
-        ok = self._guarded(lambda: core.set_key(self._dev, layer, col, keycode))
-        self.set_ack.emit(key_id(col), ok)
+        r = self._request(core.build_set_key(layer, col, keycode))
+        self.set_ack.emit(key_id(col), r is not None)
 
     @Slot(int, int, int, int)
     def set_encoder(self, layer, enc, direction, keycode):
-        ok = self._guarded(
-            lambda: core.set_encoder(self._dev, layer, enc, direction, keycode))
-        self.set_ack.emit(enc_id(enc, direction), ok)
+        r = self._request(core.build_set_encoder(layer, enc, direction, keycode))
+        self.set_ack.emit(enc_id(enc, direction), r is not None)
 
     @Slot(int, int)
     def get_key(self, layer, col) -> int:
-        if self._dev is None:
-            return 0
-        return core.get_key(self._dev, layer, col)
+        r = self._request(core.build_get_key(layer, col))
+        return core.parse_keycode_reply(r) if r else 0
 
     @Slot(int, int, int)
     def set_light_scalar(self, value_id, value):
-        self._guarded(lambda: core.set_light_scalar(self._dev, value_id, value))
+        self._request(core.build_light_set_scalar(value_id, value))
 
     @Slot(int, int)
     def set_color(self, hue, sat):
-        self._guarded(lambda: core.set_color(self._dev, hue, sat))
+        self._request(core.build_light_set_color(hue, sat))
 
     @Slot()
     def save(self):
-        self.lighting_saved.emit(
-            self._guarded(lambda: core.save_lighting(self._dev)))
+        r = self._request(core.build_light_save())
+        self.lighting_saved.emit(r is not None)
 
     def _start_matrix_poll(self):
         if self._matrix_timer is not None:
@@ -98,21 +139,15 @@ class ControlWorker(QObject):
 
     @Slot()
     def _poll_matrix(self):
-        if self._dev is None:
+        r = self._request(core.build_pressed_cols())
+        if r is None:
             return
-        try:
-            cols = core.pressed_cols(self._dev)
-        except Exception:  # noqa: BLE001 — device yanked mid-poll
-            self.device_state.emit("no-device")
-            if self._matrix_timer is not None:
-                self._matrix_timer.stop()
-            return
+        cols = core.parse_pressed_cols_reply(r)
         if cols is None:
             if self._matrix_state != "unsupported":
                 self._matrix_state = "unsupported"
                 self.matrix_state.emit("unsupported")
-            if self._matrix_timer is not None:
-                self._matrix_timer.stop()
+            self._matrix_timer.stop()
             return
         if self._matrix_state != "available":
             self._matrix_state = "available"
@@ -123,13 +158,3 @@ class ControlWorker(QObject):
         for col in sorted(self._pressed_cols - pressed):
             self.matrix_release.emit(key_id(col))
         self._pressed_cols = pressed
-
-    def _guarded(self, fn) -> bool:
-        if self._dev is None:
-            return False
-        try:
-            fn()
-            return True
-        except Exception:  # noqa: BLE001 — surface as a failed ack/device-state
-            self.device_state.emit("no-device")
-            return False
