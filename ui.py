@@ -675,6 +675,7 @@ class KeycodePickerDialog(QDialog):
 class ScrollFeelPanel(QGroupBox):
     # External signals — connected by main.py with Qt.QueuedConnection.
     ax_changed = Signal(bool)
+    config_changed = Signal(object)
 
     SLIDERS = [
         # (attr,                label,            lo,    hi,   step)
@@ -697,6 +698,9 @@ class ScrollFeelPanel(QGroupBox):
         self._engine = scroll_engine
         self._sliders: dict[str, QSlider] = {}
         self._value_labels: dict[str, QLabel] = {}
+        if self._engine is not None:
+            self.config_changed.connect(
+                self._engine.reload_config, Qt.QueuedConnection)
 
         v = QVBoxLayout(self)
 
@@ -770,13 +774,13 @@ class ScrollFeelPanel(QGroupBox):
                 int(self._config.coast_threshold))
         self._refresh_value_label(attr)
         if self._engine is not None:
-            self._engine.reload_config(self._config)
+            self.config_changed.emit(self._config)
         save_config(self._config, self._config_path)
 
     def _on_invert(self, checked: bool) -> None:
         self._config.invert = checked
         if self._engine is not None:
-            self._engine.reload_config(self._config)
+            self.config_changed.emit(self._config)
         save_config(self._config, self._config_path)
 
     def _on_recheck(self) -> None:

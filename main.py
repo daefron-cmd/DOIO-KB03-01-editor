@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QMetaObject, Qt, QThread
+from PySide6.QtCore import Q_ARG, QMetaObject, Qt, QThread
 from PySide6.QtWidgets import QApplication
 
 from hid_io import HidIoWorker
@@ -55,10 +55,10 @@ def main() -> int:
     # 1. imports_ok: pushed via queued signal so it runs on control_thread.
     QMetaObject.invokeMethod(
         control, "set_imports_ok",
-        Qt.QueuedConnection, Qt.Q_ARG(bool, imports_ok))
+        Qt.QueuedConnection, Q_ARG(bool, imports_ok))
     QMetaObject.invokeMethod(
         control, "on_ax_trusted_changed",
-        Qt.QueuedConnection, Qt.Q_ARG(bool, ax_trusted))
+        Qt.QueuedConnection, Q_ARG(bool, ax_trusted))
 
     # 2. engine_running: comes from QtScrollEngine signals → bound slots.
     scroll_engine.started.connect(
@@ -94,7 +94,10 @@ def main() -> int:
     # Shutdown: invoke timer-touching slots on their owning threads, then
     # quit/wait. Never call moved-object methods directly from main thread.
     QMetaObject.invokeMethod(scroll_engine, "stop", Qt.QueuedConnection)
-    QMetaObject.invokeMethod(io, "stop", Qt.QueuedConnection)
+    # HidIoWorker.run_forever occupies io_thread's event loop, so a queued
+    # stop slot cannot be delivered. stop() is thread-safe: it flips the
+    # Event and wakes the loop.
+    io.stop()
     listener.stop()
     listener_thread.quit()
     control_thread.quit()

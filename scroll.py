@@ -366,5 +366,6 @@ class QtScrollEngine(QObject):
             return  # not started / not on macOS / startup failed
         self._post(pixels, scroll_phase, momentum_phase)
 
+    @Slot(object)
     def reload_config(self, cfg: ScrollConfig) -> None:
         self.engine.config = cfg
