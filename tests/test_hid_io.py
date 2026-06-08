@@ -108,3 +108,14 @@ def test_two_concurrent_requests_resolve_in_fifo_order():
     r2 = f2.result(timeout=0.1)
     assert r1[4:6] == [0xAA, 0xAA]
     assert r2[4:6] == [0xBB, 0xBB]
+
+
+def test_id_unhandled_raises_on_request_future():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x99])  # made-up unhandled command
+    worker.pump_writes()
+    dev.queue_reply([0xFF])
+    worker.pump_once()
+    with pytest.raises(IdUnhandledError):
+        fut.result(timeout=0.1)
