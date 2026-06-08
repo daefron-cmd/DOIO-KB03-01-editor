@@ -6,11 +6,28 @@ and emits the same Qt signals it always did.
 """
 
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 import core
 from model import Snapshot, key_id, enc_id
+
+
+@dataclass
+class Readiness:
+    handle_open: bool = False
+    imports_ok: bool = False
+    ax_trusted: bool = False
+    engine_running: bool = False
+
+    def is_ready(self) -> bool:
+        return (
+            self.handle_open
+            and self.imports_ok
+            and self.ax_trusted
+            and self.engine_running
+        )
 
 
 class ControlWorker(QObject):
