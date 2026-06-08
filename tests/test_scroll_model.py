@@ -451,3 +451,9 @@ def test_is_accessibility_trusted_returns_bool_on_darwin():
     from scroll import is_accessibility_trusted
     result = is_accessibility_trusted(prompt=False)
     assert isinstance(result, bool)
+
+
+def test_qt_scroll_engine_constructs_without_qt_running():
+    from scroll import QtScrollEngine
+    eng = QtScrollEngine()
+    assert eng.engine.state.phase == Phase.IDLE

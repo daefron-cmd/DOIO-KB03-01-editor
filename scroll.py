@@ -295,3 +295,76 @@ def is_accessibility_trusted(prompt: bool = False) -> bool:
     }
     return bool(
         ApplicationServices.AXIsProcessTrustedWithOptions(options))
+
+
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
+import time as _time
+
+
+class QtScrollEngine(QObject):
+    """Qt wrapper that drives ScrollEngine.tick at 120 Hz via QTimer.
+
+    Failure modes:
+      - pyobjc.Quartz import fails / post setup fails: emits `error`,
+        emits `stopped` (NOT `started`), so readiness gate `engine_running`
+        never goes true and firmware stays in standalone fallback.
+    """
+
+    started = Signal()
+    stopped = Signal()
+    error = Signal(str)
+
+    TICK_PERIOD_MS = 8  # ~120 Hz
+
+    def __init__(self, config: ScrollConfig | None = None):
+        super().__init__()
+        self.engine = ScrollEngine(
+            now_fn=lambda: int(_time.monotonic() * 1000),
+            post_scroll=self._post_scroll_safe,
+            config=config,
+        )
+        self._timer = None
+        self._post = None  # filled in start_real(); None during tests
+
+    @Slot()
+    def start_real(self) -> None:
+        """Production start: install the real Quartz poster and begin
+        ticking. Called on the engine thread via QThread.started.
+
+        If Quartz import or post-helper construction fails, emit `error`
+        and `stopped` instead of `started` — readiness stays false and
+        firmware fallback remains active.
+        """
+        try:
+            self._post = make_cgevent_post()
+        except Exception as exc:  # ImportError, AttributeError, etc.
+            self.error.emit(f"scroll engine startup failed: {exc!r}")
+            self.stopped.emit()
+            return
+        if self._timer is None:
+            self._timer = QTimer(self)
+            self._timer.setInterval(self.TICK_PERIOD_MS)
+            self._timer.timeout.connect(self.engine.tick)
+        self._timer.start()
+        self.started.emit()
+
+    @Slot()
+    def stop(self) -> None:
+        # Must be invoked via QMetaObject.invokeMethod from outside this
+        # thread — see main.py shutdown.
+        if self._timer is not None:
+            self._timer.stop()
+        self.stopped.emit()
+
+    @Slot(int, int)
+    def on_scroll_tick(self, direction: int, device_t_ms: int) -> None:
+        self.engine.on_tick(direction, device_t_ms)
+
+    def _post_scroll_safe(self, pixels: int, scroll_phase: int,
+                          momentum_phase: int) -> None:
+        if self._post is None:
+            return  # not started / not on macOS / startup failed
+        self._post(pixels, scroll_phase, momentum_phase)
+
+    def reload_config(self, cfg: ScrollConfig) -> None:
+        self.engine.config = cfg
