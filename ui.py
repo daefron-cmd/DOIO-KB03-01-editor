@@ -683,11 +683,20 @@ class MainWindow(QMainWindow):
     req_save = Signal()
     req_reconnect = Signal()
 
-    def __init__(self, control, listener):
+    def __init__(self, control, listener, *,
+                 scroll_engine=None, imports_ok: bool = True,
+                 ax_trusted_initial: bool = True,
+                 config=None, config_path=None):
         super().__init__()
         self.setWindowTitle("DOIO KB03-01")
         self._control = control
         self._listener = listener
+        self._scroll_engine = scroll_engine
+        self._scroll_config = config
+        self._scroll_config_path = config_path
+        self._imports_ok = imports_ok
+        self._ax_trusted = ax_trusted_initial
+        self.scroll_panel = None  # set by _build_scroll_panel; public for main.py
         self._snapshot: Snapshot | None = None
         self._layer = 0
         self._inferred_layer = InferredLayerState(layer_count=4)
