@@ -1,8 +1,9 @@
 # usb-probe
 
-A macOS GUI to inspect and configure the **DOIO KB03-01** macropad (3 keys + 1
-push-knob + 2 rotary encoders) over the VIA raw-HID interface, plus a small set
-of standalone probes for poking at the device's USB and HID layers.
+A macOS GUI to inspect and configure the **DOIO KB03-01** macropad (3 keys + a
+dedicated Layers key + 1 push-knob + 2 rotary encoders) over the VIA raw-HID
+interface, plus a small set of standalone probes for poking at the device's USB
+and HID layers.
 
 The repo started as a one-off `probe.py` to identify the hardware and grew into
 a PySide6 app for remapping keys, binding encoder directions, driving the RGB
@@ -144,7 +145,7 @@ swatch.
   advances both together via the matrix poll. Doing better would mean a custom
   QMK build that pushes layer state via `raw_hid_send`; see
   `docs/KB03_layer_state_handoff.md`.
-- **Norwegian-Mac symbol catalog uses Option combos** (`A+KC_8` for `[`, etc.).
+- **Norwegian-Mac symbol catalog uses Option combos** (`⌥+KC_8` for `[`, etc.).
   A window manager that swallows global `⌥` hotkeys (e.g. AeroSpace) will
   intercept them before any text field — verify with the WM disabled if a
   symbol "doesn't type."

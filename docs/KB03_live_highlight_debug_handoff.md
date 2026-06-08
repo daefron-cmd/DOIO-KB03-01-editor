@@ -187,7 +187,7 @@ This was necessary because otherwise a report like:
 ```
 
 would be decoded as `mods=0x01`, `key=KC_A`, causing the GUI to search for
-`LCtrl+KC_A` instead of plain `KC_A`.
+`⌃+KC_A` instead of plain `KC_A`.
 
 File:
 

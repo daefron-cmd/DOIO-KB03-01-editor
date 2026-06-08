@@ -34,7 +34,7 @@ def test_left_shift_alt_match():
     code = mod(KC_A, SHIFT, ALT)  # left Shift+Alt + A → 0x0604
     km = [[code, 0, 0, 0, 0]] + [[0] * 5 for _ in range(3)]
     snap = _snap(km)
-    # report mod byte 0x06 = LShift|LAlt, base KC_A → matches.
+    # report mod byte 0x06 = left Shift|Alt (⇧+⌥), base KC_A → matches.
     # NOTE: this passes even under the naive (report<<8)|base fold because
     # left Shift+Alt equals the QMK field by coincidence — see the guard below.
     assert resolve_controls(snap, "keyboard", 0x06, [KC_A]) == [key_id(0)]

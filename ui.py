@@ -7,10 +7,12 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QGraphicsDropShadowEffect, QMainWindow, QPushButton, QRadioButton,
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
+    QGridLayout, QHBoxLayout, QLabel, QGraphicsDropShadowEffect, QLineEdit,
+    QListWidget, QListWidgetItem, QMainWindow, QPushButton, QRadioButton,
     QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
+import re
 
 import core
 from catalog import CATALOG, render, resolve_controls
@@ -484,6 +486,191 @@ def calibrated_led_color(hue: int, sat: int, brightness: int) -> QColor:
     )
 
 
+_LABEL_SPLIT_RE = re.compile(r"^(.+?)\s\s+\((.+)\)\s*$")
+
+
+def _split_catalog_label(label: str) -> tuple[str | None, str]:
+    """Split a catalog label of the form 'name  (qmk)' into (name, qmk).
+
+    Falls back to (None, label) for entries where the label IS the QMK
+    identifier (modifiers like 'KC_LCTL', layer ops like 'MO(1)', lighting
+    keycodes like 'RGB_TOG').
+    """
+    m = _LABEL_SPLIT_RE.match(label)
+    if m:
+        return m.group(1), m.group(2)
+    return None, label
+
+
+class KeycodePickerDialog(QDialog):
+    """Modal browser+search for the keycode catalog.
+
+    Left: category list ("All" + each catalog category).
+    Right: items, filtered by AND of (selected category, search query).
+    Search matches case-insensitively against the name, qmk code, category,
+    and 0xHEX, so 'vol', 'F7', 'MO', and '0x004F' all work — regardless of
+    which display toggles are on.
+    Top toggles ("Name" / "QMK code" / "Hex") choose what's *displayed* on
+    each row; the choice persists for the rest of the session.
+    Double-click or Enter on a single match accepts; the chosen keycode is
+    available via `selected_code()` after `exec()` returns Accepted.
+    """
+
+    # Persisted across dialog instances within the process.
+    _show_name = True
+    _show_qmk = True
+    _show_hex = True
+
+    def __init__(self, current: int | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Pick a keycode")
+        self.setModal(True)
+        self.resize(640, 480)
+
+        # Pre-split each catalog label once; both render and search use it.
+        self._entries: list[tuple[str, str | None, str, int]] = [
+            (cat, *_split_catalog_label(label), code)
+            for cat, label, code in CATALOG
+        ]
+        self._categories = sorted({cat for cat, _, _, _ in self._entries})
+        self._selected_code: int | None = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(10)
+
+        self._search = QLineEdit()
+        self._search.setPlaceholderText(
+            "Search (name, category, or 0x… hex — e.g. vol, F7, MO, 0x004F)")
+        self._search.textChanged.connect(self._refresh_items)
+        self._search.returnPressed.connect(self._on_search_enter)
+        outer.addWidget(self._search)
+
+        toggles = QHBoxLayout()
+        toggles.setSpacing(12)
+        toggles.addWidget(QLabel("Show:"))
+        self._cb_name = QCheckBox("Name")
+        self._cb_qmk = QCheckBox("QMK code")
+        self._cb_hex = QCheckBox("Hex")
+        self._cb_name.setChecked(KeycodePickerDialog._show_name)
+        self._cb_qmk.setChecked(KeycodePickerDialog._show_qmk)
+        self._cb_hex.setChecked(KeycodePickerDialog._show_hex)
+        for cb in (self._cb_name, self._cb_qmk, self._cb_hex):
+            cb.toggled.connect(self._on_toggle_changed)
+            toggles.addWidget(cb)
+        toggles.addStretch()
+        outer.addLayout(toggles)
+
+        body = QHBoxLayout()
+        body.setSpacing(10)
+
+        self._cat_list = QListWidget()
+        self._cat_list.setMaximumWidth(140)
+        self._cat_list.addItem("All")
+        for cat in self._categories:
+            self._cat_list.addItem(cat)
+        self._cat_list.currentRowChanged.connect(self._refresh_items)
+        body.addWidget(self._cat_list)
+
+        self._item_list = QListWidget()
+        self._item_list.itemDoubleClicked.connect(lambda _: self._accept_current())
+        self._item_list.currentRowChanged.connect(self._update_ok_enabled)
+        body.addWidget(self._item_list, stretch=1)
+
+        outer.addLayout(body, stretch=1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._accept_current)
+        buttons.rejected.connect(self.reject)
+        self._ok_button = buttons.button(QDialogButtonBox.Ok)
+        outer.addWidget(buttons)
+
+        # Pre-select the category that contains the current code, if any.
+        initial_row = 0
+        if current is not None:
+            for i, cat in enumerate(self._categories, start=1):
+                if any(c == current and cat_ == cat
+                       for cat_, _, _, c in self._entries):
+                    initial_row = i
+                    break
+        self._cat_list.setCurrentRow(initial_row)
+        self._refresh_items()
+        if current is not None:
+            self._select_code(current)
+        self._search.setFocus()
+
+    def _on_toggle_changed(self, _checked: bool) -> None:
+        KeycodePickerDialog._show_name = self._cb_name.isChecked()
+        KeycodePickerDialog._show_qmk = self._cb_qmk.isChecked()
+        KeycodePickerDialog._show_hex = self._cb_hex.isChecked()
+        self._refresh_items()
+
+    def _format_entry(self, name: str | None, qmk: str, code: int) -> str:
+        parts: list[str] = []
+        if KeycodePickerDialog._show_name and name is not None:
+            parts.append(name)
+        if KeycodePickerDialog._show_qmk:
+            parts.append(qmk)
+        if KeycodePickerDialog._show_hex:
+            parts.append(f"0x{code:04X}")
+        return "   ·  ".join(parts)
+
+    def _refresh_items(self) -> None:
+        query = self._search.text().strip().lower()
+        cat_idx = self._cat_list.currentRow()
+        # When the user is searching, treat the category filter as global so a
+        # leftover sidebar selection can't hide an obvious match.
+        chosen_cat = (None if query or cat_idx <= 0
+                      else self._categories[cat_idx - 1])
+        self._cat_list.setEnabled(not query)
+
+        self._item_list.clear()
+        for cat, name, qmk, code in self._entries:
+            if chosen_cat and cat != chosen_cat:
+                continue
+            # Search always looks at every searchable facet, even when the
+            # corresponding display toggle is off.
+            hay = f"{cat} {name or ''} {qmk} 0x{code:04x}".lower()
+            if query and query not in hay:
+                continue
+            item = QListWidgetItem(self._format_entry(name, qmk, code))
+            item.setData(Qt.UserRole, code)
+            self._item_list.addItem(item)
+        if self._item_list.count() and self._item_list.currentRow() < 0:
+            self._item_list.setCurrentRow(0)
+        self._update_ok_enabled()
+
+    def _update_ok_enabled(self) -> None:
+        self._ok_button.setEnabled(self._item_list.currentRow() >= 0)
+
+    def _select_code(self, code: int) -> None:
+        for row in range(self._item_list.count()):
+            if self._item_list.item(row).data(Qt.UserRole) == code:
+                self._item_list.setCurrentRow(row)
+                self._item_list.scrollToItem(self._item_list.item(row))
+                return
+
+    def _on_search_enter(self) -> None:
+        # Enter on a single match accepts immediately; otherwise jump into
+        # the result list so arrow keys take over.
+        if self._item_list.count() == 1:
+            self._item_list.setCurrentRow(0)
+            self._accept_current()
+        elif self._item_list.count():
+            self._item_list.setFocus()
+
+    def _accept_current(self) -> None:
+        row = self._item_list.currentRow()
+        if row < 0:
+            return
+        self._selected_code = self._item_list.item(row).data(Qt.UserRole)
+        self.accept()
+
+    def selected_code(self) -> int | None:
+        return self._selected_code
+
+
 class MainWindow(QMainWindow):
     # Request signals → control-worker slots. Emitting (not calling) is what
     # makes the cross-thread delivery QUEUED, so worker code runs on its own
@@ -676,12 +863,11 @@ class MainWindow(QMainWindow):
         self._editor_label = QLabel("Select a control to edit")
         self._editor_label.setWordWrap(True)
         self._inspector_v.addWidget(self._editor_label)
-        self._combo = QComboBox()
-        for cat, label, code in CATALOG:
-            self._combo.addItem(f"[{cat}] {label}", code)
-        self._combo.setEnabled(False)
-        self._combo.activated.connect(self._on_pick_keycode)
-        self._inspector_v.addWidget(self._combo)
+        self._picker_btn = QPushButton("—")
+        self._picker_btn.setEnabled(False)
+        self._picker_btn.clicked.connect(self._open_picker)
+        self._inspector_v.addWidget(self._picker_btn)
+        self._current_pick: int | None = None
 
     def _build_led_panel(self):
         self._add_section_label("RGB Matrix")
@@ -950,20 +1136,28 @@ class MainWindow(QMainWindow):
         self._selected = cid
         self._device_panel.set_active(cid)
         self._editor_label.setText(f"Editing {self._control_name(cid)}")
-        self._combo.setEnabled(True)
+        self._picker_btn.setEnabled(True)
         code = self._current_code(cid)
-        if code is not None:
-            index = self._combo.findData(code)
-            if index >= 0:
-                self._combo.setCurrentIndex(index)
+        self._current_pick = code
+        self._picker_btn.setText(render(code) if code is not None else "—")
 
-    def _on_pick_keycode(self, _index):
+    def _open_picker(self):
         if self._selected is None:
             return
-        code = self._combo.currentData()
+        dlg = KeycodePickerDialog(current=self._current_pick, parent=self)
+        if dlg.exec() == QDialog.Accepted:
+            code = dlg.selected_code()
+            if code is not None and code != self._current_pick:
+                self._on_pick_keycode(code)
+
+    def _on_pick_keycode(self, code: int):
+        if self._selected is None:
+            return
         cid = self._selected
-        # carry (layer, code) with the request so a later combo/layer change
-        # can't corrupt the snapshot update when the queued ack returns.
+        self._current_pick = code
+        self._picker_btn.setText(render(code))
+        # carry (layer, code) with the request so a later layer change can't
+        # corrupt the snapshot update when the queued ack returns.
         self._pending_code[cid] = (self._layer, code)
         if cid[0] == "key":
             self.req_set_key.emit(self._layer, cid[1], code)

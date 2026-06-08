@@ -20,12 +20,19 @@ def test_right_side_mod_fold_is_distinct():
 
 
 def test_decode_roundtrips_modded_value():
-    assert decode(mod(KC_8, SHIFT, ALT)) == "LShift+LAlt+KC_8"
+    # Apple-convention display: Control, Option, Shift, Command (stacked, no
+    # separator); 'R' prefix only when the right-side bit is set.
+    assert decode(mod(KC_8, SHIFT, ALT)) == "⌥⇧+KC_8"
+    assert decode(mod(KC_8, ALT, right=True)) == "R⌥+KC_8"
     assert decode(layer(MO, 1)) == "MO(1)"
     assert decode(0x002F) == "KC_LBRC"
 
 
-from catalog import CATALOG, render, reverse_index
+from catalog import (
+    CATALOG, render, reverse_index,
+    _BASE_CATALOG, _apply_layout, LAYOUTS, ACTIVE_LAYOUT,
+    KC_LBRC, KC_SCLN, KC_QUOTE,
+)
 
 
 def test_catalog_keycodes_are_unique():
@@ -33,6 +40,33 @@ def test_catalog_keycodes_are_unique():
     for cat, label, code in CATALOG:
         assert code not in seen, f"dup {code:#06x}: {label} vs {seen[code]}"
         seen[code] = label
+
+
+def test_active_layout_overrides_base_entry():
+    # NO-Mac is active; KC_LBRC (0x002F) is overridden from US-Mac '[' in
+    # 'symbols' to 'å' in 'letters'. Category, name, and label all change;
+    # the QMK code stays in parens.
+    entries = [e for e in CATALOG if e[2] == KC_LBRC]
+    assert entries == [("letters", "å  (KC_LBRC)", KC_LBRC)]
+    # The US-Mac base entry that was there is gone (replaced, not duplicated).
+    assert ("symbols", "[  (KC_LBRC)", KC_LBRC) not in CATALOG
+
+
+def test_active_layout_appends_new_entries():
+    # NO-Mac Option-combos aren't in the base — they're appended.
+    assert ("symbols", "[  (⌥+KC_8)", mod(KC_8, ALT)) in CATALOG
+    assert ("symbols", "{  (⌥⇧+KC_8)", mod(KC_8, SHIFT, ALT)) in CATALOG
+
+
+def test_empty_layout_keeps_base_us_mac_labels():
+    # With no overrides, the base catalog labels survive verbatim — proving
+    # that the base IS US-Mac and layouts are pure deltas.
+    catalog = _apply_layout(_BASE_CATALOG, ())
+    assert catalog == _BASE_CATALOG
+    by_code = {c: (cat, label) for cat, label, c in catalog}
+    assert by_code[KC_LBRC] == ("symbols", "[  (KC_LBRC)")
+    assert by_code[KC_SCLN] == ("symbols", ";  (KC_SCLN)")
+    assert by_code[KC_QUOTE] == ("symbols", "'  (KC_QUOTE)")
 
 
 def test_render_prefers_friendly_label_then_falls_back():
@@ -47,6 +81,16 @@ def test_basic_special_present():
     codes = {code for _, _, code in CATALOG}
     assert 0x0000 in codes  # KC_NO
     assert 0x0001 in codes  # KC_TRANSPARENT
+
+
+def test_mouse_wheel_keycodes_present():
+    # QMK basic-keycode IDs for the four wheel directions.
+    assert KEYCODES[0x00D9] == "KC_MS_WH_UP"
+    assert KEYCODES[0x00DA] == "KC_MS_WH_DOWN"
+    assert KEYCODES[0x00DB] == "KC_MS_WH_LEFT"
+    assert KEYCODES[0x00DC] == "KC_MS_WH_RIGHT"
+    mouse = {code for cat, _, code in CATALOG if cat == "mouse"}
+    assert {0x00D9, 0x00DA, 0x00DB, 0x00DC} <= mouse
 
 
 from catalog import CONSUMER_USAGE
