@@ -311,3 +311,31 @@ def test_single_isolated_detent_emits_at_most_15_pixels():
     assert abs(total_px) <= 15, (
         f"Single slow detent emitted {total_px} px — precision guarantee broken. "
         f"Posts: {posts}")
+
+
+def test_steady_spin_converges_to_stable_velocity():
+    """Spin at one detent every 30 ms for 3 seconds. After the first
+    ~1 second the velocity should be within 5% of steady-state."""
+    eng, _, clock = _make_engine(now=0)
+    eng._post = lambda *a: None
+    detent_period = 30
+    velocity_samples = []
+    t = 0
+    last_detent = 0
+    end = 3000
+    while t <= end:
+        clock[0] = t
+        if t - last_detent >= detent_period:
+            eng.on_tick(direction=+1, device_t_ms=t)
+            last_detent = t
+        eng.tick()
+        if t > 1000:
+            velocity_samples.append(eng.state.velocity)
+        t += 8
+
+    assert velocity_samples
+    v_late = velocity_samples[-200:]  # last ~1.6 s
+    v_min, v_max = min(v_late), max(v_late)
+    spread = (v_max - v_min) / max(abs(v_max), 1)
+    assert spread < 0.20, (
+        f"Velocity unstable in late phase: min={v_min:.1f} max={v_max:.1f}")
