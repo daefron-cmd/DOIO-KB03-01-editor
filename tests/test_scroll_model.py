@@ -286,3 +286,28 @@ def test_same_direction_during_momentum_reopens_active_with_one_momentum_ended()
     assert momentum_ended_count == 1
     assert eng.state.phase == Phase.ACTIVE
     assert eng.state.velocity == 500.0 + eng.config.impulse_per_detent
+
+
+def _run_to_idle(eng, clock, start_ms, max_ms=5000, tick_period_ms=8):
+    posts_local = []
+    eng._post = lambda p, sp, mp: posts_local.append((p, sp, mp))
+    t = start_ms
+    end = start_ms + max_ms
+    while t <= end:
+        clock[0] = t
+        eng.tick()
+        if eng.state.phase == Phase.IDLE:
+            break
+        t += tick_period_ms
+    return posts_local
+
+
+def test_single_isolated_detent_emits_at_most_15_pixels():
+    eng, _, clock = _make_engine(now=0)
+    eng.on_tick(direction=+1, device_t_ms=0)
+    posts = _run_to_idle(eng, clock, start_ms=0)
+    total_px = sum(p[0] for p in posts)
+    assert eng.state.phase == Phase.IDLE
+    assert abs(total_px) <= 15, (
+        f"Single slow detent emitted {total_px} px — precision guarantee broken. "
+        f"Posts: {posts}")
