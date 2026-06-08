@@ -54,7 +54,7 @@ const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
     // Outer ring (index 1): custom keycodes on every layer.
     [_BASE]   = { ENCODER_CCW_CW(MS_WHLU, MS_WHLD),
                   ENCODER_CCW_CW(OUTER_SCROLL_CCW, OUTER_SCROLL_CW) },
-    [_MOUSE]  = { ENCODER_CCW_CW(MS_UP,   MS_DOWN),
+    [_MOUSE]  = { ENCODER_CCW_CW(MS_LEFT, MS_RGHT),
                   ENCODER_CCW_CW(OUTER_SCROLL_CCW, OUTER_SCROLL_CW) },
     [_MEDIA]  = { ENCODER_CCW_CW(KC_VOLD, KC_VOLU),
                   ENCODER_CCW_CW(OUTER_SCROLL_CCW, OUTER_SCROLL_CW) },
