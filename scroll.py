@@ -39,3 +39,12 @@ class ScrollState:
     last_tick_ms: int = 0
     last_emit_ms: int = 0
     phase: Phase = Phase.IDLE
+
+
+def magspeed_gain(abs_v: float, c: ScrollConfig) -> float:
+    if abs_v <= c.slow_threshold:
+        return 1.0
+    if abs_v >= c.fast_threshold:
+        return c.max_gain
+    t = (abs_v - c.slow_threshold) / (c.fast_threshold - c.slow_threshold)
+    return 1.0 + t * (c.max_gain - 1.0)

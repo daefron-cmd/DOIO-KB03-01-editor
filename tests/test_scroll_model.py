@@ -22,3 +22,24 @@ def test_scrollconfig_defaults():
     assert c.cutoff_v == 40.0
     assert c.v_max == 2500.0
     assert c.invert is False
+
+
+from scroll import magspeed_gain
+
+
+def test_gain_below_slow_is_one():
+    c = ScrollConfig()
+    assert magspeed_gain(0.0, c) == 1.0
+    assert magspeed_gain(c.slow_threshold, c) == 1.0
+
+
+def test_gain_above_fast_is_max():
+    c = ScrollConfig()
+    assert magspeed_gain(c.fast_threshold, c) == c.max_gain
+    assert magspeed_gain(c.fast_threshold + 1000, c) == c.max_gain
+
+
+def test_gain_midpoint_is_linear():
+    c = ScrollConfig(slow_threshold=200, fast_threshold=1200, max_gain=11)
+    mid = (200 + 1200) / 2
+    assert magspeed_gain(mid, c) == 6.0  # halfway: 1 + 0.5 * 10
