@@ -8,9 +8,9 @@ from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
-    QGridLayout, QHBoxLayout, QLabel, QGraphicsDropShadowEffect, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QPushButton, QRadioButton,
-    QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QGraphicsDropShadowEffect,
+    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QPushButton,
+    QRadioButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 import re
 
@@ -18,6 +18,7 @@ import core
 from catalog import CATALOG, render, resolve_controls
 from inferred_layer import InferredLayerState
 from model import LightingState, Snapshot, key_id, enc_id
+from scroll import ScrollConfig, save_config
 
 ROOT = Path(__file__).resolve().parent
 
@@ -671,6 +672,141 @@ class KeycodePickerDialog(QDialog):
         return self._selected_code
 
 
+class ScrollFeelPanel(QGroupBox):
+    # External signals — connected by main.py with Qt.QueuedConnection.
+    ax_changed = Signal(bool)
+
+    SLIDERS = [
+        # (attr,                label,            lo,    hi,   step)
+        # max_gain slider stores integer ×10 (1.0× → 10).
+        ("impulse_per_detent",  "Impulse",        20,    500,  10),
+        ("tau_ms",              "Decay τ",        50,    2000, 50),
+        ("slow_threshold",      "Slow threshold", 50,    1000, 25),
+        ("fast_threshold",      "Fast threshold", 500,   5000, 100),
+        ("max_gain",            "Max gain",       10,    120,  5),
+        ("active_window_ms",    "Active window",  30,    250,  10),
+        ("coast_threshold",     "Coast threshold",50,    2000, 25),
+        ("cutoff_v",            "Momentum cutoff",5,     200,  5),
+    ]
+
+    def __init__(self, config: ScrollConfig, config_path,
+                 scroll_engine, ax_trusted: bool, imports_ok: bool):
+        super().__init__("Scroll feel — outer ring")
+        self._config = config
+        self._config_path = config_path
+        self._engine = scroll_engine
+        self._sliders: dict[str, QSlider] = {}
+        self._value_labels: dict[str, QLabel] = {}
+
+        v = QVBoxLayout(self)
+
+        # Status banner
+        self._banner = QLabel()
+        self._banner.setWordWrap(True)
+        v.addWidget(self._banner)
+        self._update_banner(imports_ok=imports_ok, ax_trusted=ax_trusted)
+
+        # Re-check button
+        h = QHBoxLayout()
+        self._recheck = QPushButton("Re-check Accessibility")
+        self._recheck.clicked.connect(self._on_recheck)
+        h.addWidget(self._recheck)
+        h.addStretch()
+        v.addLayout(h)
+
+        # Sliders
+        for attr, label, lo, hi, step in self.SLIDERS:
+            row = QHBoxLayout()
+            lbl = QLabel(label)
+            lbl.setMinimumWidth(120)
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(lo, hi)
+            slider.setSingleStep(step)
+            slider.setPageStep(step * 10)
+            current = getattr(config, attr)
+            if attr == "max_gain":
+                slider.setValue(int(current * 10))
+            else:
+                slider.setValue(int(current))
+            val_lbl = QLabel()
+            val_lbl.setMinimumWidth(80)
+            slider.valueChanged.connect(
+                lambda val, a=attr: self._on_slider_change(a, val))
+            self._sliders[attr] = slider
+            self._value_labels[attr] = val_lbl
+            self._refresh_value_label(attr)
+            row.addWidget(lbl)
+            row.addWidget(slider, 1)
+            row.addWidget(val_lbl)
+            v.addLayout(row)
+
+        # Invert toggle
+        self._invert = QCheckBox("Invert direction")
+        self._invert.setChecked(config.invert)
+        self._invert.toggled.connect(self._on_invert)
+        v.addWidget(self._invert)
+
+    def _refresh_value_label(self, attr: str) -> None:
+        v = getattr(self._config, attr)
+        if attr == "max_gain":
+            text = f"{v:.1f}×"
+        elif attr in {"tau_ms", "active_window_ms"}:
+            text = f"{int(v)} ms"
+        else:
+            text = f"{int(v)} px/s"
+        self._value_labels[attr].setText(text)
+
+    def _on_slider_change(self, attr: str, raw_value: int) -> None:
+        if attr == "max_gain":
+            setattr(self._config, attr, raw_value / 10.0)
+        elif attr in {"tau_ms", "active_window_ms"}:
+            setattr(self._config, attr, int(raw_value))
+        else:
+            setattr(self._config, attr, float(raw_value))
+        # Enforce ordering invariant on the fly
+        if self._config.coast_threshold < self._config.cutoff_v:
+            self._config.coast_threshold = self._config.cutoff_v
+            self._sliders["coast_threshold"].setValue(
+                int(self._config.coast_threshold))
+        self._refresh_value_label(attr)
+        if self._engine is not None:
+            self._engine.reload_config(self._config)
+        save_config(self._config, self._config_path)
+
+    def _on_invert(self, checked: bool) -> None:
+        self._config.invert = checked
+        if self._engine is not None:
+            self._engine.reload_config(self._config)
+        save_config(self._config, self._config_path)
+
+    def _on_recheck(self) -> None:
+        from scroll import is_accessibility_trusted
+        trusted = is_accessibility_trusted(prompt=True)
+        self._update_banner(imports_ok=True, ax_trusted=trusted)
+        # Emit a Qt signal — main.py connects this to
+        # ControlWorker.on_ax_trusted_changed with QueuedConnection so
+        # the slot executes on control_thread.
+        self.ax_changed.emit(trusted)
+
+    def _update_banner(self, *, imports_ok: bool, ax_trusted: bool) -> None:
+        if not imports_ok:
+            self._banner.setStyleSheet("background: #ffe0e0; padding: 6px;")
+            self._banner.setText(
+                "pyobjc-framework-Quartz is missing. The outer encoder will "
+                "fall back to plain wheel events. Run `uv sync`.")
+        elif not ax_trusted:
+            self._banner.setStyleSheet("background: #fff3e0; padding: 6px;")
+            self._banner.setText(
+                "Accessibility permission not granted. Outer encoder is in "
+                "fallback mode. Grant in System Settings → Privacy & Security "
+                "→ Accessibility, then click Re-check. If Re-check does not "
+                "turn this green, relaunch the app — macOS may require a "
+                "fresh process to recognise the new trust state.")
+        else:
+            self._banner.setStyleSheet("background: #e0ffe0; padding: 6px;")
+            self._banner.setText("MX-Master scroll active.")
+
+
 class MainWindow(QMainWindow):
     # Request signals → control-worker slots. Emitting (not calling) is what
     # makes the cross-thread delivery QUEUED, so worker code runs on its own
@@ -744,6 +880,7 @@ class MainWindow(QMainWindow):
         self._build_layer_selector()
         self._build_editor()
         self._build_led_panel()
+        self._build_scroll_panel()
         self._inspector_v.addStretch()
         self._set_layer_led(0)
         self._connect_workers(control, listener)
@@ -938,6 +1075,20 @@ class MainWindow(QMainWindow):
         grid.addWidget(self._lighting_status, len(specs) + 3, 0, 1, 3)
         self._inspector_v.addLayout(grid)
         self._refresh_lighting_ui()
+
+    def _build_scroll_panel(self):
+        # Public attribute — main.py reads window.scroll_panel and
+        # connects the panel's ax_changed signal.
+        self.scroll_panel = None
+        if self._scroll_engine is None:
+            return
+        self.scroll_panel = ScrollFeelPanel(
+            self._scroll_config, self._scroll_config_path,
+            self._scroll_engine,
+            ax_trusted=self._ax_trusted,
+            imports_ok=self._imports_ok,
+        )
+        self._inspector_v.addWidget(self.scroll_panel)
 
     def _add_section_label(self, text: str):
         if self._inspector_v.count():
