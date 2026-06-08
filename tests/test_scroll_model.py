@@ -43,3 +43,13 @@ def test_gain_midpoint_is_linear():
     c = ScrollConfig(slow_threshold=200, fast_threshold=1200, max_gain=11)
     mid = (200 + 1200) / 2
     assert magspeed_gain(mid, c) == 6.0  # halfway: 1 + 0.5 * 10
+
+
+from scroll import ScrollEngine, ScrollPhase, MomentumPhase
+
+
+def test_engine_initial_state_is_idle():
+    posts = []
+    eng = ScrollEngine(now_fn=lambda: 0, post_scroll=lambda *a: posts.append(a))
+    assert eng.state.phase == Phase.IDLE
+    assert posts == []

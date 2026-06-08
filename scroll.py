@@ -41,6 +41,54 @@ class ScrollState:
     phase: Phase = Phase.IDLE
 
 
+from typing import Callable
+
+
+class ScrollPhase:
+    """Mirror of CoreGraphics CGScrollPhase values (NOT NSEvent values).
+    Verified at runtime against Quartz.kCGScrollPhase* on Darwin.
+    """
+    NONE = 0       # local sentinel; CoreGraphics has no NONE
+    BEGAN = 1
+    CHANGED = 2
+    ENDED = 4
+    CANCELLED = 8
+    MAY_BEGIN = 128
+
+
+class MomentumPhase:
+    """Mirror of kCGScrollWheelEventMomentumPhase enum values."""
+    NONE = 0
+    BEGAN = 1
+    CHANGED = 2
+    ENDED = 3
+
+
+PostScroll = Callable[[int, int, int], None]
+NowMs = Callable[[], int]
+
+
+class ScrollEngine:
+    """Pure inertia state machine. Drive ticks via tick(); deliver
+    detents via on_tick(direction, device_t_ms).
+
+    Both clock and event-post are injected so the engine is testable
+    without macOS or wall-clock dependencies.
+    """
+
+    def __init__(
+        self,
+        *,
+        now_fn: NowMs,
+        post_scroll: PostScroll,
+        config: ScrollConfig | None = None,
+    ):
+        self.config = config or ScrollConfig()
+        self.state = ScrollState()
+        self._now = now_fn
+        self._post = post_scroll
+
+
 def magspeed_gain(abs_v: float, c: ScrollConfig) -> float:
     if abs_v <= c.slow_threshold:
         return 1.0
