@@ -72,7 +72,12 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
                 if (inertia_is_host_ready()) {
                     inertia_send_scroll_ping(cw);
                 } else {
-                    tap_code(cw ? MS_WHLD : MS_WHLU);
+                    // tap_code with the default 0ms delay can race the
+                    // mouse_task tick: register sets the wheel field,
+                    // unregister clears it, and the deferred HID dispatch
+                    // sees wheel=0. A small delay between register and
+                    // unregister lets the task emit the wheel impulse.
+                    tap_code_delay(cw ? MS_WHLD : MS_WHLU, 10);
                 }
             }
             return false;
