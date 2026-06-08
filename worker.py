@@ -8,7 +8,7 @@ and emits the same Qt signals it always did.
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 import core
 from model import Snapshot, key_id, enc_id
@@ -46,8 +46,10 @@ class ControlWorker(QObject):
         super().__init__()
         self._io = io
         self._matrix_timer = None
+        self._heartbeat_timer = None
         self._pressed_cols: set[int] = set()
         self._matrix_state = ""
+        self._readiness = Readiness()
 
     def _request(self, payload: list[int]) -> list[int] | None:
         fut = self._io.send_request(payload)
@@ -65,9 +67,10 @@ class ControlWorker(QObject):
 
     @Slot()
     def start(self):
-        # HidIoWorker opens the handle on its own thread; we just wait for it.
         self._start_matrix_poll()
         self.load_all()
+        # Do NOT infer handle_open from matrix state. handle_open is set
+        # by _on_device_state from HidIoWorker.
 
     @Slot()
     def reconnect(self):
@@ -175,3 +178,70 @@ class ControlWorker(QObject):
         for col in sorted(self._pressed_cols - pressed):
             self.matrix_release.emit(key_id(col))
         self._pressed_cols = pressed
+
+    @Slot(str, bool)
+    def update_readiness(self, gate: str, value: bool) -> None:
+        """Single mutation point. Must only run on control_thread.
+        External callers connect signals to the bound slots below
+        (on_engine_started/stopped, on_ax_trusted_changed, etc.) so
+        delivery is queued onto this thread.
+        """
+        if not hasattr(self._readiness, gate):
+            raise ValueError(f"unknown readiness gate: {gate}")
+        was_ready = self._readiness.is_ready()
+        setattr(self._readiness, gate, value)
+        is_ready = self._readiness.is_ready()
+        if is_ready and not was_ready:
+            self._start_heartbeat()
+        elif not is_ready and was_ready:
+            self._stop_heartbeat()
+
+    # ---- bound adapters: connect signals to THESE, not to lambdas. ----
+
+    @Slot()
+    def on_engine_started(self) -> None:
+        self.update_readiness("engine_running", True)
+
+    @Slot()
+    def on_engine_stopped(self) -> None:
+        self.update_readiness("engine_running", False)
+
+    @Slot(bool)
+    def on_ax_trusted_changed(self, trusted: bool) -> None:
+        self.update_readiness("ax_trusted", trusted)
+
+    @Slot(bool)
+    def set_imports_ok(self, ok: bool) -> None:
+        self.update_readiness("imports_ok", ok)
+
+    @Slot(str)
+    def _on_device_state(self, s: str) -> None:
+        if s == "":
+            self.update_readiness("handle_open", True)
+        elif s == "no-device":
+            self.update_readiness("handle_open", False)
+
+    def _start_heartbeat(self) -> None:
+        # MUST be called on control_thread. update_readiness enforces this
+        # transitively because external callers go through queued slots.
+        assert self.thread() == QThread.currentThread(), (
+            "_start_heartbeat called off-thread — check signal wiring")
+        if self._heartbeat_timer is None:
+            self._heartbeat_timer = QTimer(self)
+            self._heartbeat_timer.setInterval(200)
+            self._heartbeat_timer.timeout.connect(self._send_heartbeat)
+        # Send one heartbeat immediately so firmware doesn't wait up to
+        # 200 ms to flip from fallback to host-takeover.
+        self._send_heartbeat()
+        self._heartbeat_timer.start()
+
+    def _stop_heartbeat(self) -> None:
+        if self._heartbeat_timer is not None:
+            self._heartbeat_timer.stop()
+
+    @Slot()
+    def _send_heartbeat(self) -> None:
+        # send_untracked is fire-and-forget; never blocks. Even if a VIA
+        # request is in flight on the IO thread, the heartbeat enqueues
+        # and the IO loop drains it without waiting for a reply.
+        self._io.send_untracked([0xA0, 0x01])
