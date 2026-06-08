@@ -92,3 +92,19 @@ def test_send_request_without_device_stays_pending_until_close():
     worker.stop()                # close: fails all pending
     with pytest.raises(TransportClosedError):
         fut.result(timeout=0.1)
+
+
+def test_two_concurrent_requests_resolve_in_fifo_order():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    f1 = worker.send_request([0x04, 0, 0, 1])
+    f2 = worker.send_request([0x04, 0, 0, 2])
+    worker.pump_writes()
+    dev.queue_reply([0x04, 0, 0, 1, 0xAA, 0xAA])
+    dev.queue_reply([0x04, 0, 0, 2, 0xBB, 0xBB])
+    worker.pump_once()
+    worker.pump_once()
+    r1 = f1.result(timeout=0.1)
+    r2 = f2.result(timeout=0.1)
+    assert r1[4:6] == [0xAA, 0xAA]
+    assert r2[4:6] == [0xBB, 0xBB]
