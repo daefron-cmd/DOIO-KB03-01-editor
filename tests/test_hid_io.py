@@ -163,6 +163,35 @@ def test_read_error_streak_closes_handle_and_fails_pending():
         fut.result(timeout=0.1)
 
 
+def test_transient_read_error_does_not_emit_no_device():
+    """A single OSError followed by a successful read must NOT flip the
+    handle_open readiness gate. Only a streak that closes the handle
+    should emit 'no-device'."""
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    states = []
+    worker.device_state.connect(lambda s: states.append(s))
+
+    # One transient read error
+    original_read = dev.read
+    call_count = [0]
+
+    def flaky_read(*a, **kw):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise OSError("transient")
+        return original_read(*a, **kw)
+    dev.read = flaky_read
+
+    worker.pump_once()  # error #1 — streak 1
+    worker.pump_once()  # success — streak resets to 0
+
+    assert states == [], (
+        f"transient error spuriously emitted device_state: {states}")
+    assert worker._dev is dev   # not closed
+    assert worker._error_streak == 0
+
+
 def test_write_error_fails_associated_future():
     dev = FakeHID()
     worker = HidIoWorker.with_handle(dev)

@@ -219,8 +219,10 @@ class HidIoWorker(QObject):
                     return
 
     def _handle_read_error(self) -> None:
+        # Single transient errors must NOT drop the readiness gate; only a
+        # streak that triggers close should emit "no-device". A successful
+        # read in pump_once resets _error_streak silently.
         self._error_streak += 1
-        self.device_state.emit("no-device")
         if self._error_streak >= self.READ_ERROR_LIMIT:
             self._close_handle_internal(reason="read error streak")
 
@@ -236,6 +238,7 @@ class HidIoWorker(QObject):
                 dev.close()
             except Exception:
                 pass
+            self.device_state.emit("no-device")
         for _, fut in inflight:
             if not fut.done():
                 fut.set_exception(
