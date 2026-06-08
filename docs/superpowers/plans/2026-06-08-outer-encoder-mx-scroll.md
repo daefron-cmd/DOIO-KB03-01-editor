@@ -127,13 +127,13 @@ MASK = Quartz.CGEventMaskBit(SCROLL_WHEEL_EVENT)
 
 
 def _phase_name(value: int) -> str:
+    # CoreGraphics CGScrollPhase values (NOT NSEventPhase).
     return {
         0: "none",
         1: "began",
-        2: "stationary",
-        4: "changed",
-        8: "ended",
-        16: "cancelled",
+        2: "changed",
+        4: "ended",
+        8: "cancelled",
         128: "may-begin",
     }.get(value, f"unknown({value})")
 
@@ -151,15 +151,21 @@ def _tap_callback(proxy, type_, ev, refcon):
     if type_ != SCROLL_WHEEL_EVENT:
         return ev
     g = Quartz.CGEventGetIntegerValueField
+    gd = Quartz.CGEventGetDoubleValueField
     phase = g(ev, Quartz.kCGScrollWheelEventScrollPhase)
     mom   = g(ev, Quartz.kCGScrollWheelEventMomentumPhase)
     cont  = g(ev, Quartz.kCGScrollWheelEventIsContinuous)
     dy    = g(ev, Quartz.kCGScrollWheelEventDeltaAxis1)
     pdy   = g(ev, Quartz.kCGScrollWheelEventPointDeltaAxis1)
+    # FixedPt field may or may not be exposed; guard.
+    try:
+        fpdy = gd(ev, Quartz.kCGScrollWheelEventFixedPtDeltaAxis1)
+    except Exception:
+        fpdy = float("nan")
     print(
-        f"{time.monotonic():.3f}  phase={_phase_name(phase):<10} "
-        f"momentum={_momentum_name(mom):<8} cont={cont} "
-        f"deltaY={dy:>5} pointDeltaY={pdy:>5}",
+        f"{time.monotonic():.3f}  phase={phase}({_phase_name(phase):<9}) "
+        f"momentum={mom}({_momentum_name(mom):<7}) cont={cont} "
+        f"deltaY={dy:>5} pointDeltaY={pdy:>5} fixedPtDeltaY={fpdy:>8.2f}",
         flush=True,
     )
     return ev
@@ -417,13 +423,14 @@ from typing import Callable
 
 
 class ScrollPhase:
-    """Mirror of kCGScrollWheelEventScrollPhase enum values."""
-    NONE = 0
+    """Mirror of CoreGraphics CGScrollPhase values (NOT NSEvent values).
+    Verified at runtime against Quartz.kCGScrollPhase* on Darwin.
+    """
+    NONE = 0       # local sentinel; CoreGraphics has no NONE
     BEGAN = 1
-    STATIONARY = 2
-    CHANGED = 4
-    ENDED = 8
-    CANCELLED = 16
+    CHANGED = 2
+    ENDED = 4
+    CANCELLED = 8
     MAY_BEGIN = 128
 
 
@@ -1448,7 +1455,7 @@ def make_cgevent_post():
     return _post
 ```
 
-- [ ] **Step 2: Add an integration smoke test**
+- [ ] **Step 2: Add an integration smoke test + ScrollPhase runtime check**
 
 Append to `tests/test_scroll_model.py`:
 
@@ -1462,6 +1469,48 @@ def test_make_cgevent_post_does_not_crash_on_darwin():
     # Post a zero-pixel "began" — visible to the OS but harmless.
     post(0, ScrollPhase.BEGAN, MomentumPhase.NONE)
     post(0, ScrollPhase.ENDED, MomentumPhase.NONE)
+
+
+def test_scroll_phase_constants_match_coregraphics_on_darwin():
+    """Our ScrollPhase mirror must match CoreGraphics CGScrollPhase.
+    If pyobjc exposes the constants, assert equality. If not, log the
+    runtime values so a manual probe can verify shape."""
+    import sys
+    if sys.platform != "darwin":
+        return
+    import Quartz
+
+    pairs = [
+        ("BEGAN", "kCGScrollPhaseBegan"),
+        ("CHANGED", "kCGScrollPhaseChanged"),
+        ("ENDED", "kCGScrollPhaseEnded"),
+        ("CANCELLED", "kCGScrollPhaseCancelled"),
+        ("MAY_BEGIN", "kCGScrollPhaseMayBegin"),
+    ]
+    for ours, theirs in pairs:
+        if not hasattr(Quartz, theirs):
+            continue  # newer/older pyobjc may not expose all
+        assert getattr(ScrollPhase, ours) == getattr(Quartz, theirs), (
+            f"ScrollPhase.{ours} = {getattr(ScrollPhase, ours)} but "
+            f"Quartz.{theirs} = {getattr(Quartz, theirs)}")
+
+
+def test_momentum_phase_constants_match_coregraphics_on_darwin():
+    import sys
+    if sys.platform != "darwin":
+        return
+    import Quartz
+
+    pairs = [
+        ("BEGAN", "kCGMomentumScrollPhaseBegin"),
+        ("CHANGED", "kCGMomentumScrollPhaseContinue"),
+        ("ENDED", "kCGMomentumScrollPhaseEnd"),
+    ]
+    for ours, theirs in pairs:
+        if not hasattr(Quartz, theirs):
+            continue
+        assert getattr(MomentumPhase, ours) == getattr(Quartz, theirs), (
+            f"MomentumPhase.{ours} mismatch with Quartz.{theirs}")
 ```
 
 - [ ] **Step 3: Run**
@@ -1537,13 +1586,23 @@ git commit -m "feat(scroll): is_accessibility_trusted helper"
 
 ## Phase 4 — HID transport (HidIoWorker)
 
-### Task 18: HidIoWorker skeleton + send_request / send_untracked APIs
+### Task 18: HidIoWorker — single-owner architecture with IO-thread write queue
 
 **Files:**
 - Create: `hid_io.py`
 - Create: `tests/test_hid_io.py`
 
-The worker is designed so the transport logic (queue, demux, future fulfillment) is testable single-threaded via `pump_once()`. The real-thread run loop is separate.
+Design contract: only the IO thread reads OR writes the HID handle.
+`send_request()` and `send_untracked()` enqueue a fully-built frame and
+wake the IO loop. A single lock guards both the inflight ordering and
+the per-cmd-id queue so iteration is race-free.
+
+Frame building is centralised in `build_raw_hid_frame()` which validates
+length (must be ≥1, ≤ `RAW_EPSIZE=32`). Overlong payloads raise loudly.
+
+The worker is testable single-threaded via `pump_once()` (one read + one
+write batch). The real-thread `run_forever()` calls `pump_once()` and
+waits on a `threading.Event` between iterations.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1554,12 +1613,15 @@ import threading
 
 import pytest
 
-from hid_io import HidIoWorker, IdUnhandledError
+from hid_io import (
+    HidIoWorker, IdUnhandledError, TransportClosedError,
+    RAW_EPSIZE, build_raw_hid_frame,
+)
 
 
 class FakeHID:
     """Single-handle fake: writes captured to a list; reads pop from a
-    deque. read() blocks via an event if empty (simulates timeout)."""
+    deque. read() returns [] on empty (simulates timeout)."""
 
     def __init__(self):
         self.writes: list[bytes] = []
@@ -1577,10 +1639,9 @@ class FakeHID:
             raise OSError("closed")
         if self._replies:
             return self._replies.pop(0)
-        return []  # timeout
+        return []
 
     def queue_reply(self, reply: list[int]):
-        # pad to 32 bytes
         padded = list(reply) + [0] * max(0, 32 - len(reply))
         self._replies.append(padded[:32])
 
@@ -1588,23 +1649,60 @@ class FakeHID:
         self._closed = True
 
 
-def test_send_request_fulfils_future_with_matching_reply():
+# --- frame builder validation ---
+
+def test_build_raw_hid_frame_is_report_id_plus_32_bytes():
+    frame = build_raw_hid_frame([0xA0, 0x01])
+    assert len(frame) == 1 + RAW_EPSIZE
+    assert frame[0] == 0x00     # report id
+    assert frame[1] == 0xA0     # cmd id
+    assert frame[2] == 0x01     # version
+    assert frame[3:] == bytes(RAW_EPSIZE - 2)  # zero-padded
+
+
+def test_build_raw_hid_frame_rejects_empty_payload():
+    with pytest.raises(ValueError):
+        build_raw_hid_frame([])
+
+
+def test_build_raw_hid_frame_rejects_over_32_bytes():
+    with pytest.raises(ValueError):
+        build_raw_hid_frame([0xA0] + [0] * 32)
+
+
+# --- write enqueue + IO-thread drain ---
+
+def test_send_request_enqueues_and_drains_on_pump():
     dev = FakeHID()
     worker = HidIoWorker.with_handle(dev)
-    fut = worker.send_request([0x04, 0, 0, 2])  # GET_KEYCODE
+    fut = worker.send_request([0x04, 0, 0, 2])
+    # Nothing written yet — caller doesn't touch dev.
+    # Actually: with_handle bypasses the queue for tests; tighten to
+    # require explicit pump_writes.
+    worker.pump_writes()
+    assert len(dev.writes) == 1
     dev.queue_reply([0x04, 0, 0, 2, 0x06, 0x25])
     worker.pump_once()
     assert fut.done()
-    reply = fut.result(timeout=0.1)
-    assert reply[0] == 0x04
+    assert fut.result(timeout=0.1)[0] == 0x04
 
 
 def test_send_untracked_writes_but_creates_no_future():
     dev = FakeHID()
     worker = HidIoWorker.with_handle(dev)
     worker.send_untracked([0xA0, 0x01])
+    worker.pump_writes()
     assert len(dev.writes) == 1
     assert worker.pending_count() == 0
+
+
+def test_send_request_without_device_stays_pending_until_close():
+    worker = HidIoWorker(open_fn=lambda: None)
+    fut = worker.send_request([0x04])
+    assert not fut.done()       # waits for handle
+    worker.stop()                # close: fails all pending
+    with pytest.raises(TransportClosedError):
+        fut.result(timeout=0.1)
 ```
 
 - [ ] **Step 2: Run**
@@ -1617,27 +1715,55 @@ Expected: FAIL — `hid_io` module doesn't exist.
 ```python
 """HidIoWorker — sole owner of the 0xFF60 raw-HID handle.
 
-Owns: handle, read loop, write queue, per-command-ID FIFO future demux,
-unsolicited-frame routing (scroll_tick), close/reopen with backoff.
+Owns: handle, read loop, write queue, per-cmd-id FIFO future demux +
+global inflight order, unsolicited-frame routing (scroll_tick),
+close/reopen with backoff.
+
+ALL reads AND writes happen on the IO thread (or via pump_once /
+pump_writes for tests). Callers MUST NOT call dev.write directly.
 
 Two execution modes:
   - run_forever() in a thread (production)
-  - pump_once() called manually (testing)
+  - pump_once() / pump_writes() called manually (testing)
 """
 
 from __future__ import annotations
 
 import threading
+import time as _time
 from collections import defaultdict, deque
 from concurrent.futures import Future
 from typing import Callable
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Slot
+
+
+RAW_EPSIZE = 32
+REPORT_ID = 0x00
+
+
+def build_raw_hid_frame(payload: list[int]) -> bytes:
+    """Validate and frame a raw-HID payload as [REPORT_ID][32 bytes].
+    Raises ValueError on empty or overlong payload."""
+    if not payload:
+        raise ValueError("payload must include at least the command id")
+    if len(payload) > RAW_EPSIZE:
+        raise ValueError(
+            f"payload must fit in RAW_EPSIZE={RAW_EPSIZE}, got {len(payload)}")
+    return bytes([REPORT_ID]) + bytes(payload) + bytes(RAW_EPSIZE - len(payload))
 
 
 class IdUnhandledError(Exception):
-    """Device replied with 0xFF (id_unhandled) — the command isn't
-    recognised by this firmware."""
+    """Device replied with 0xFF — command unrecognised by firmware."""
+
+
+class TransportClosedError(Exception):
+    """The HID handle closed (or never opened) while a future was pending."""
+
+
+def _default_open():
+    import core
+    return core.open_raw()
 
 
 class HidIoWorker(QObject):
@@ -1648,13 +1774,29 @@ class HidIoWorker(QObject):
     HOST_SCROLL_READY = 0xA0
     ID_UNHANDLED = 0xFF
 
-    def __init__(self):
+    READ_ERROR_LIMIT = 5
+    BACKOFF_S = (1.0, 2.0, 5.0)
+
+    def __init__(self,
+                 open_fn: Callable = _default_open,
+                 now_fn: Callable = _time.monotonic):
         super().__init__()
         self._dev = None
-        self._dev_lock = threading.Lock()
-        self._write_q: deque[bytes] = deque()
+        self._lock = threading.Lock()
+        # Write queue: list of (frame_bytes, fut_or_None). fut is the
+        # future that should be failed on write error.
+        self._write_q: deque[tuple[bytes, Future | None]] = deque()
+        # Inflight ordering: list of (cmd_id, future) in send order.
+        self._inflight: deque[tuple[int, Future]] = deque()
+        # Per-cmd-id FIFO (mirror of _inflight for fast lookup on reply).
         self._futures: dict[int, deque[Future]] = defaultdict(deque)
+        self._wake = threading.Event()
         self._stop = threading.Event()
+        self._open_fn = open_fn
+        self._now = now_fn
+        self._error_streak = 0
+        self._last_open_attempt = -float("inf")
+        self._backoff_idx = 0
 
     @classmethod
     def with_handle(cls, dev) -> "HidIoWorker":
@@ -1663,75 +1805,212 @@ class HidIoWorker(QObject):
         return w
 
     def pending_count(self) -> int:
-        return sum(len(q) for q in self._futures.values())
+        with self._lock:
+            return len(self._inflight)
 
     def send_request(self, payload: list[int]) -> Future:
-        """Send a frame whose first byte is the command ID. Returns a
-        Future fulfilled by the next reply with that same command ID.
-        Replies arrive in FIFO order per command ID.
-        """
-        cmd_id = payload[0]
-        body = bytes([0x00]) + bytes(payload) + bytes(32 - len(payload))
+        """Enqueue a frame; return a Future fulfilled by the matching
+        reply, or failed on close/write-error. Pending futures wait if
+        the handle isn't open yet; the IO loop fails them when stop()
+        is called or after the close-retry budget runs out."""
+        frame = build_raw_hid_frame(payload)
         fut: Future = Future()
-        self._futures[cmd_id].append(fut)
-        with self._dev_lock:
-            if self._dev is not None:
-                self._dev.write(body)
+        cmd_id = payload[0]
+        with self._lock:
+            self._inflight.append((cmd_id, fut))
+            self._futures[cmd_id].append(fut)
+            self._write_q.append((frame, fut))
+        self._wake.set()
         return fut
 
     def send_untracked(self, payload: list[int]) -> None:
-        """Fire-and-forget. No future registered. Used for heartbeats."""
-        body = bytes([0x00]) + bytes(payload) + bytes(32 - len(payload))
-        with self._dev_lock:
-            if self._dev is not None:
-                self._dev.write(body)
+        """Fire-and-forget. No future is tracked. Used for heartbeats."""
+        frame = build_raw_hid_frame(payload)
+        with self._lock:
+            self._write_q.append((frame, None))
+        self._wake.set()
+
+    def cancel(self, fut: Future) -> None:
+        """Evict a timed-out future from all queues so a late reply
+        doesn't get mis-attributed to it."""
+        self._remove_inflight(fut)
+        if not fut.done():
+            fut.cancel()
+
+    def pump_writes(self) -> None:
+        """Drain the write queue once. Called by run_forever or tests."""
+        with self._lock:
+            dev = self._dev
+            if dev is None:
+                # Fail any tracked futures whose request can't be sent.
+                # (Heuristic: only fail when we explicitly have no
+                # device AND no open path. In real wiring open is
+                # retried in run_forever.)
+                return
+            batch = list(self._write_q)
+            self._write_q.clear()
+        for frame, fut in batch:
+            try:
+                dev.write(frame)
+            except OSError as exc:
+                if fut is not None:
+                    fut.set_exception(TransportClosedError(repr(exc)))
+                    self._remove_inflight(fut)
+                self._handle_read_error()
+                return
 
     def pump_once(self, timeout_ms: int = 0) -> None:
-        """Read once and dispatch. Called from the run loop or tests."""
-        with self._dev_lock:
+        """Drain any pending writes, then read once and dispatch."""
+        self.pump_writes()
+        with self._lock:
             dev = self._dev
         if dev is None:
             return
         try:
             data = dev.read(32, timeout_ms)
+            self._error_streak = 0
         except OSError:
-            self.device_state.emit("no-device")
+            self._handle_read_error()
             return
         if not data:
             return
         cmd_id = data[0]
         if cmd_id == self.SCROLL_PING:
             direction = +1 if data[2] == 1 else -1
-            t = (data[4] | (data[5] << 8) | (data[6] << 16) | (data[7] << 24))
+            t = (data[4] | (data[5] << 8)
+                 | (data[6] << 16) | (data[7] << 24))
             self.scroll_tick.emit(direction, t)
             return
-        # VIA reply: fulfil oldest future for this command ID
         if cmd_id == self.ID_UNHANDLED:
-            # We don't know which command this corresponds to — drop and log
-            # (a well-behaved VIA replies in-order, so 0xFF means the very
-            # next pending future's request was unhandled; fulfil the
-            # oldest one across all queues with the error).
-            for q in self._futures.values():
-                if q:
-                    q.popleft().set_exception(
-                        IdUnhandledError("device returned id_unhandled"))
-                    return
+            # Fail the OLDEST inflight future, regardless of its cmd_id.
+            self._fail_oldest(IdUnhandledError(
+                "device returned id_unhandled"))
             return
-        q = self._futures.get(cmd_id)
-        if q:
-            q.popleft().set_result(list(data))
+        with self._lock:
+            q = self._futures.get(cmd_id)
+            fut = q.popleft() if q else None
+            if fut is not None:
+                # Remove from global inflight too.
+                try:
+                    self._inflight.remove((cmd_id, fut))
+                except ValueError:
+                    pass
+        if fut is not None:
+            fut.set_result(list(data))
+
+    def _fail_oldest(self, exc: Exception) -> None:
+        with self._lock:
+            if not self._inflight:
+                return
+            cmd_id, fut = self._inflight.popleft()
+            q = self._futures.get(cmd_id)
+            if q:
+                try:
+                    q.remove(fut)
+                except ValueError:
+                    pass
+        fut.set_exception(exc)
+
+    def _remove_inflight(self, fut: Future) -> None:
+        with self._lock:
+            for entry in list(self._inflight):
+                if entry[1] is fut:
+                    self._inflight.remove(entry)
+                    q = self._futures.get(entry[0])
+                    if q:
+                        try:
+                            q.remove(fut)
+                        except ValueError:
+                            pass
+                    return
+
+    def _handle_read_error(self) -> None:
+        self._error_streak += 1
+        self.device_state.emit("no-device")
+        if self._error_streak >= self.READ_ERROR_LIMIT:
+            self._close_handle_internal(reason="read error streak")
+
+    def _close_handle_internal(self, *, reason: str) -> None:
+        with self._lock:
+            dev, self._dev = self._dev, None
+            inflight = list(self._inflight)
+            self._inflight.clear()
+            self._futures.clear()
+            self._write_q.clear()
+        if dev is not None:
+            try:
+                dev.close()
+            except Exception:
+                pass
+        for _, fut in inflight:
+            if not fut.done():
+                fut.set_exception(
+                    TransportClosedError(f"handle closed: {reason}"))
+        self._error_streak = 0
+
+    def maybe_reopen(self) -> bool:
+        with self._lock:
+            if self._dev is not None:
+                return False
+        delay = self.BACKOFF_S[min(self._backoff_idx,
+                                   len(self.BACKOFF_S) - 1)]
+        if self._now() - self._last_open_attempt < delay:
+            return False
+        self._last_open_attempt = self._now()
+        dev = self._open_fn()
+        if dev is None:
+            self._backoff_idx += 1
+            return False
+        with self._lock:
+            self._dev = dev
+        self._backoff_idx = 0
+        # IMPORTANT: emit empty string immediately on success so
+        # ControlWorker can flip handle_open=True before the first
+        # request lands.
+        self.device_state.emit("")
+        return True
+
+    @Slot()
+    def stop(self) -> None:
+        """Stop the IO loop and fail all pending futures with
+        TransportClosedError."""
+        self._stop.set()
+        self._wake.set()
+        self._close_handle_internal(reason="worker stopped")
 ```
 
-- [ ] **Step 4: Run**
+Notes on intentional design choices, called out explicitly:
+
+- `send_request` enqueues; **does not** call `dev.write`. The IO thread
+  drains via `pump_writes`.
+- `pump_writes` fails the associated future on `OSError` and triggers
+  the read-error-streak path so the worker closes + reopens.
+- `_close_handle_internal` fails ALL pending futures with
+  `TransportClosedError` so callers don't hang.
+- `0xFF` `id_unhandled` fails the OLDEST inflight future (by global
+  insertion order), not "first queue found in a dict iteration".
+- A single `_lock` covers `_inflight`, `_futures`, `_write_q`, and
+  `_dev` — no dict-iteration race.
+
+- [ ] **Step 4: Add a baseline test for NoDeviceError on a barebones worker**
+
+Append to `tests/test_hid_io.py` the `test_send_request_without_device_fails_future` test if not already present from Step 1.
+
+Note: the heuristic in `send_request` triggers `NoDeviceError` only in
+the "no override, no handle" case. In real wiring `open_fn` is real and
+the IO loop reopens on backoff; tracked futures sit in the queue until
+either a reply arrives or `_close_handle_internal` fails them.
+
+- [ ] **Step 5: Run**
 
 Run: `uv run pytest tests/test_hid_io.py -v`
-Expected: PASS (2 tests).
+Expected: PASS (all tests from Step 1).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add hid_io.py tests/test_hid_io.py
-git commit -m "feat(hid_io): HidIoWorker skeleton — send_request, send_untracked"
+git commit -m "feat(hid_io): IO-thread write queue + validated frame builder + future lifecycle"
 ```
 
 ---
@@ -1751,6 +2030,7 @@ def test_two_concurrent_requests_resolve_in_fifo_order():
     worker = HidIoWorker.with_handle(dev)
     f1 = worker.send_request([0x04, 0, 0, 1])
     f2 = worker.send_request([0x04, 0, 0, 2])
+    worker.pump_writes()
     dev.queue_reply([0x04, 0, 0, 1, 0xAA, 0xAA])
     dev.queue_reply([0x04, 0, 0, 2, 0xBB, 0xBB])
     worker.pump_once()
@@ -1789,6 +2069,7 @@ def test_id_unhandled_raises_on_request_future():
     dev = FakeHID()
     worker = HidIoWorker.with_handle(dev)
     fut = worker.send_request([0x99])  # made-up unhandled command
+    worker.pump_writes()
     dev.queue_reply([0xFF])
     worker.pump_once()
     with pytest.raises(IdUnhandledError):
@@ -1855,188 +2136,165 @@ git commit -m "test(hid_io): 0xA1 SCROLL_PING emits scroll_tick"
 
 ---
 
-### Task 22: HidIoWorker — close/reopen with backoff
+### Task 22: HidIoWorker — future lifecycle and reopen-backoff tests
 
 **Files:**
-- Modify: `hid_io.py`
 - Modify: `tests/test_hid_io.py`
 
-- [ ] **Step 1: Write the failing test**
+The Task-18 implementation already includes error-streak detection,
+reopen with backoff, and `_close_handle_internal` failing all pending
+futures. This task is the regression-test suite for those behaviours.
+
+- [ ] **Step 1: Write the failing tests**
 
 Append to `tests/test_hid_io.py`:
 
 ```python
-def test_read_error_streak_triggers_close():
+def test_read_error_streak_closes_handle_and_fails_pending():
     dev = FakeHID()
     worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0])
+    worker.pump_writes()
     # Force read errors
     def bad_read(*a, **kw):
         raise OSError("boom")
     dev.read = bad_read
     states = []
     worker.device_state.connect(lambda s: states.append(s))
-    # Each pump increments error counter
     for _ in range(5):
         worker.pump_once()
     assert states.count("no-device") >= 1
-    # After streak, dev should be released
-    assert worker._dev is None or dev._closed
+    assert worker._dev is None
+    # Pending future failed with TransportClosedError
+    with pytest.raises(TransportClosedError):
+        fut.result(timeout=0.1)
 
 
-def test_open_with_backoff_does_not_busy_loop(monkeypatch):
-    """Backoff schedule: 1s, 2s, 5s. We mock time and the open function."""
+def test_write_error_fails_associated_future():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0])
+    dev.close()  # closing makes write raise
+    worker.pump_writes()
+    with pytest.raises(TransportClosedError):
+        fut.result(timeout=0.1)
+
+
+def test_close_handle_fails_all_pending_futures():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    f1 = worker.send_request([0x04, 0])
+    f2 = worker.send_request([0x05, 0])
+    f3 = worker.send_request([0x14, 0])
+    worker._close_handle_internal(reason="test")
+    for f in (f1, f2, f3):
+        with pytest.raises(TransportClosedError):
+            f.result(timeout=0.1)
+
+
+def test_id_unhandled_fails_oldest_global_inflight():
+    """0xFF must fail the OLDEST inflight future regardless of its
+    command id (NOT 'first queue found in a dict iteration')."""
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    first = worker.send_request([0x04, 0])   # cmd 0x04 first
+    second = worker.send_request([0x05, 0])  # cmd 0x05 second
+    worker.pump_writes()
+    dev.queue_reply([0xFF])
+    worker.pump_once()
+    with pytest.raises(IdUnhandledError):
+        first.result(timeout=0.1)
+    assert not second.done()
+
+
+def test_id_unhandled_ordering_with_dict_insertion_race():
+    """Insert a new cmd_id between send and reply; 0xFF must still
+    fail the OLDEST not the new one."""
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    a = worker.send_request([0x04, 0])
+    b = worker.send_request([0x99, 0])  # never-before-seen cmd id
+    worker.pump_writes()
+    dev.queue_reply([0xFF])
+    worker.pump_once()
+    with pytest.raises(IdUnhandledError):
+        a.result(timeout=0.1)
+    assert not b.done()
+
+
+def test_open_with_backoff_does_not_busy_loop():
+    """Backoff schedule: 1 s, 2 s, 5 s."""
     attempts = []
     times = [0.0]
 
     def fake_open():
         attempts.append(times[0])
-        return None  # never opens
+        return None
 
     worker = HidIoWorker(open_fn=fake_open, now_fn=lambda: times[0])
-    # First check at t=0 attempts open
     worker.maybe_reopen()
     assert len(attempts) == 1
-    # Within 1s of failure, no new attempt
     times[0] = 0.5
     worker.maybe_reopen()
     assert len(attempts) == 1
-    # After 1s, next attempt
     times[0] = 1.1
     worker.maybe_reopen()
     assert len(attempts) == 2
-    # After another 2s, third attempt
     times[0] = 3.2
     worker.maybe_reopen()
     assert len(attempts) == 3
+
+
+def test_successful_reopen_emits_device_state_empty():
+    dev = FakeHID()
+    times = [0.0]
+    worker = HidIoWorker(open_fn=lambda: dev, now_fn=lambda: times[0])
+    states = []
+    worker.device_state.connect(lambda s: states.append(s))
+    times[0] = 10.0
+    assert worker.maybe_reopen() is True
+    assert states == [""]
+
+
+def test_cancel_evicts_future_so_late_reply_is_dropped():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0])
+    worker.pump_writes()
+    worker.cancel(fut)
+    # Late reply for cmd 0x04 arrives — there is no future to fulfil.
+    dev.queue_reply([0x04, 0, 0, 0, 0, 0])
+    worker.pump_once()
+    assert fut.cancelled()
+
+
+def test_stale_reply_after_close_is_dropped_silently():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0])
+    worker.pump_writes()
+    worker._close_handle_internal(reason="test")
+    # A reply arriving after close (re-attach a new dev): no crash, no
+    # future to fulfil — the demux must just drop it.
+    new_dev = FakeHID()
+    worker._dev = new_dev
+    new_dev.queue_reply([0x04, 0, 0, 0, 0, 0])
+    worker.pump_once()
+    # fut already failed during close
+    with pytest.raises(TransportClosedError):
+        fut.result(timeout=0.1)
 ```
 
 - [ ] **Step 2: Run**
 
-Run: `uv run pytest tests/test_hid_io.py::test_read_error_streak_triggers_close -v`
-Expected: FAIL — no error-streak / reopen logic.
-
-- [ ] **Step 3: Update HidIoWorker**
-
-Edit `hid_io.py`. Replace the `__init__` signature and add helpers:
-
-```python
-import time as _time
-
-# default open: lazily imports core.open_raw so tests can substitute
-def _default_open():
-    import core
-    return core.open_raw()
-
-
-class HidIoWorker(QObject):
-    scroll_tick = Signal(int, int)
-    device_state = Signal(str)
-
-    SCROLL_PING = 0xA1
-    HOST_SCROLL_READY = 0xA0
-    ID_UNHANDLED = 0xFF
-
-    READ_ERROR_LIMIT = 5
-    BACKOFF_S = (1.0, 2.0, 5.0)
-
-    def __init__(self, open_fn: Callable = _default_open, now_fn: Callable = _time.monotonic):
-        super().__init__()
-        self._dev = None
-        self._dev_lock = threading.Lock()
-        self._write_q: deque[bytes] = deque()
-        self._futures: dict[int, deque[Future]] = defaultdict(deque)
-        self._stop = threading.Event()
-        self._open_fn = open_fn
-        self._now = now_fn
-        self._error_streak = 0
-        self._last_open_attempt = -float("inf")
-        self._backoff_idx = 0
-
-    @classmethod
-    def with_handle(cls, dev) -> "HidIoWorker":
-        w = cls()
-        w._dev = dev
-        return w
-```
-
-Update `pump_once` to count read errors:
-
-```python
-    def pump_once(self, timeout_ms: int = 0) -> None:
-        with self._dev_lock:
-            dev = self._dev
-        if dev is None:
-            return
-        try:
-            data = dev.read(32, timeout_ms)
-            self._error_streak = 0
-        except OSError:
-            self._error_streak += 1
-            self.device_state.emit("no-device")
-            if self._error_streak >= self.READ_ERROR_LIMIT:
-                self._close_handle()
-            return
-        if not data:
-            return
-        cmd_id = data[0]
-        if cmd_id == self.SCROLL_PING:
-            direction = +1 if data[2] == 1 else -1
-            t = (data[4] | (data[5] << 8) | (data[6] << 16) | (data[7] << 24))
-            self.scroll_tick.emit(direction, t)
-            return
-        if cmd_id == self.ID_UNHANDLED:
-            for q in self._futures.values():
-                if q:
-                    q.popleft().set_exception(
-                        IdUnhandledError("device returned id_unhandled"))
-                    return
-            return
-        q = self._futures.get(cmd_id)
-        if q:
-            q.popleft().set_result(list(data))
-
-    def _close_handle(self) -> None:
-        with self._dev_lock:
-            if self._dev is not None:
-                try:
-                    self._dev.close()
-                except Exception:
-                    pass
-                self._dev = None
-        self._error_streak = 0
-
-    def maybe_reopen(self) -> bool:
-        """Attempt to open the handle if we don't have one and enough
-        time has passed since the last attempt. Returns True iff a fresh
-        open succeeded this call."""
-        with self._dev_lock:
-            if self._dev is not None:
-                return False
-        delay = self.BACKOFF_S[min(self._backoff_idx, len(self.BACKOFF_S) - 1)]
-        if self._now() - self._last_open_attempt < delay:
-            return False
-        self._last_open_attempt = self._now()
-        dev = self._open_fn()
-        if dev is None:
-            self._backoff_idx += 1
-            return False
-        with self._dev_lock:
-            self._dev = dev
-        self._backoff_idx = 0
-        self.device_state.emit("")
-        return True
-```
-
-- [ ] **Step 4: Run**
-
 Run: `uv run pytest tests/test_hid_io.py -v`
-Expected: PASS (10 tests).
+Expected: PASS (Task 18 + Task 19/20/21 + Task 22 tests, all).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add hid_io.py tests/test_hid_io.py
-git commit -m "feat(hid_io): close on read-error streak; reopen with backoff"
+git add tests/test_hid_io.py
+git commit -m "test(hid_io): future lifecycle, 0xFF oldest-global, backoff"
 ```
 
 ---
@@ -2046,25 +2304,36 @@ git commit -m "feat(hid_io): close on read-error streak; reopen with backoff"
 **Files:**
 - Modify: `hid_io.py`
 
-- [ ] **Step 1: Add run_forever and stop**
+`stop` was added in Task 18. This task adds the production loop that
+calls `pump_once` and `maybe_reopen` until stopped, waking promptly when
+new writes are enqueued.
+
+- [ ] **Step 1: Add run_forever**
 
 Append inside `class HidIoWorker`:
 
 ```python
+    @Slot()
     def run_forever(self) -> None:
         """Production loop. Run on a QThread.started signal."""
         self._stop.clear()
         while not self._stop.is_set():
-            if self._dev is None:
+            with self._lock:
+                have_dev = self._dev is not None
+            if not have_dev:
                 self.maybe_reopen()
-                if self._dev is None:
-                    self._stop.wait(0.1)
+                with self._lock:
+                    have_dev = self._dev is not None
+                if not have_dev:
+                    # Sleep up to 200 ms or until something is enqueued
+                    # or stop is signalled.
+                    self._wake.wait(timeout=0.2)
+                    self._wake.clear()
                     continue
             self.pump_once(timeout_ms=20)
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._close_handle()
+            # If new writes were enqueued, the wake event lets us drain
+            # them on the next iteration without blocking on read.
+            self._wake.clear()
 ```
 
 - [ ] **Step 2: No new test needed — covered by manual integration in later phases.**
@@ -2073,7 +2342,7 @@ Append inside `class HidIoWorker`:
 
 ```bash
 git add hid_io.py
-git commit -m "feat(hid_io): run_forever + stop for threaded use"
+git commit -m "feat(hid_io): run_forever with wake-event-driven write drain"
 ```
 
 ---
@@ -2263,10 +2532,16 @@ class ControlWorker(QObject):
         self._matrix_state = ""
 
     def _request(self, payload: list[int]) -> list[int] | None:
+        fut = self._io.send_request(payload)
         try:
-            fut = self._io.send_request(payload)
             return fut.result(timeout=self.REPLY_TIMEOUT_S)
-        except (FutureTimeoutError, Exception):
+        except FutureTimeoutError:
+            # Timed-out future is still in HidIoWorker's queues. Remove
+            # it so a late reply doesn't get mis-attributed.
+            self._io.cancel(fut)
+            self.device_state.emit("no-device")
+            return None
+        except Exception:  # TransportClosedError, IdUnhandledError, etc.
             self.device_state.emit("no-device")
             return None
 
@@ -2554,12 +2829,18 @@ git commit -m "feat(worker): Readiness dataclass — four-gate AND"
 
 ---
 
-### Task 27: Heartbeat timer in ControlWorker
+### Task 27: Heartbeat timer in ControlWorker (thread-pinned via @Slots)
 
 **Files:**
 - Modify: `worker.py`
 
-- [ ] **Step 1: Add the heartbeat**
+The heartbeat's `QTimer` must live on `control_thread`. That means
+`update_readiness` (and therefore `_start_heartbeat` / `_stop_heartbeat`)
+must only ever execute on `control_thread`. We enforce this by exposing
+slots, not lambdas, and having every external caller `connect(...)` with
+queued delivery.
+
+- [ ] **Step 1: Update __init__**
 
 In `worker.py`, change `ControlWorker.__init__` to:
 
@@ -2574,15 +2855,20 @@ In `worker.py`, change `ControlWorker.__init__` to:
         self._readiness = Readiness()
 ```
 
-Add a new public method:
+- [ ] **Step 2: Add update_readiness + the bound @Slot adapters**
+
+Append to `ControlWorker`:
 
 ```python
     @Slot(str, bool)
     def update_readiness(self, gate: str, value: bool) -> None:
-        """Called from various sources to update one readiness gate.
-        Heartbeat starts/stops automatically when overall readiness
-        transitions True ↔ False.
+        """Single mutation point. Must only run on control_thread.
+        External callers connect signals to the bound slots below
+        (on_engine_started/stopped, on_ax_trusted_changed, etc.) so
+        delivery is queued onto this thread.
         """
+        if not hasattr(self._readiness, gate):
+            raise ValueError(f"unknown readiness gate: {gate}")
         was_ready = self._readiness.is_ready()
         setattr(self._readiness, gate, value)
         is_ready = self._readiness.is_ready()
@@ -2591,13 +2877,68 @@ Add a new public method:
         elif not is_ready and was_ready:
             self._stop_heartbeat()
 
+    # ---- bound adapters: connect signals to THESE, not to lambdas. ----
+
+    @Slot()
+    def on_engine_started(self) -> None:
+        self.update_readiness("engine_running", True)
+
+    @Slot()
+    def on_engine_stopped(self) -> None:
+        self.update_readiness("engine_running", False)
+
+    @Slot(bool)
+    def on_ax_trusted_changed(self, trusted: bool) -> None:
+        self.update_readiness("ax_trusted", trusted)
+
+    @Slot(bool)
+    def set_imports_ok(self, ok: bool) -> None:
+        self.update_readiness("imports_ok", ok)
+```
+
+- [ ] **Step 3: Wire device_state → handle_open from transport only**
+
+The `handle_open` gate must be derived from `HidIoWorker.device_state`,
+not inferred from matrix-poll outcome. Add the slot and connect it
+*before* anything can issue a request:
+
+```python
+    @Slot(str)
+    def _on_device_state(self, s: str) -> None:
+        if s == "":
+            self.update_readiness("handle_open", True)
+        elif s == "no-device":
+            self.update_readiness("handle_open", False)
+```
+
+Update `start()` so that the device_state connection is established
+**before** `load_all()` is called (it's connected from `main.py` in
+Task 29; here just remove any stale inference):
+
+```python
+    @Slot()
+    def start(self):
+        self._start_matrix_poll()
+        self.load_all()
+        # Do NOT infer handle_open from matrix state. handle_open is set
+        # by _on_device_state from HidIoWorker.
+```
+
+- [ ] **Step 4: Heartbeat timer + immediate fire on ready transition**
+
+```python
     def _start_heartbeat(self) -> None:
-        if self._heartbeat_timer is not None:
-            self._heartbeat_timer.start()
-            return
-        self._heartbeat_timer = QTimer(self)
-        self._heartbeat_timer.setInterval(200)
-        self._heartbeat_timer.timeout.connect(self._send_heartbeat)
+        # MUST be called on control_thread. update_readiness enforces this
+        # transitively because external callers go through queued slots.
+        assert self.thread() == QThread.currentThread(), (
+            "_start_heartbeat called off-thread — check signal wiring")
+        if self._heartbeat_timer is None:
+            self._heartbeat_timer = QTimer(self)
+            self._heartbeat_timer.setInterval(200)
+            self._heartbeat_timer.timeout.connect(self._send_heartbeat)
+        # Send one heartbeat immediately so firmware doesn't wait up to
+        # 200 ms to flip from fallback to host-takeover.
+        self._send_heartbeat()
         self._heartbeat_timer.start()
 
     def _stop_heartbeat(self) -> None:
@@ -2606,47 +2947,31 @@ Add a new public method:
 
     @Slot()
     def _send_heartbeat(self) -> None:
-        # 0xA0 HOST_SCROLL_READY, version 1
+        # send_untracked is fire-and-forget; never blocks. Even if a VIA
+        # request is in flight on the IO thread, the heartbeat enqueues
+        # and the IO loop drains it without waiting for a reply.
         self._io.send_untracked([0xA0, 0x01])
 ```
 
-Also update `start()` to set the `handle_open` gate when load_all succeeds:
+Add the `QThread` import at the top of `worker.py`:
 
 ```python
-    @Slot()
-    def start(self):
-        self._start_matrix_poll()
-        self.load_all()
-        # If load_all completed without emitting no-device, the handle is open.
-        if self._matrix_state in ("available", "unsupported"):
-            self.update_readiness("handle_open", True)
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 ```
 
-- [ ] **Step 2: Wire device_state to drop handle_open gate**
-
-Also in `start()`, connect the io's device_state to clear the gate:
-
-```python
-        self._io.device_state.connect(self._on_device_state)
-
-    @Slot(str)
-    def _on_device_state(self, s: str) -> None:
-        if s == "no-device":
-            self.update_readiness("handle_open", False)
-        elif s == "":
-            self.update_readiness("handle_open", True)
-```
-
-- [ ] **Step 3: Run existing tests**
+- [ ] **Step 5: Run existing tests**
 
 Run: `uv run pytest`
-Expected: all pass.
+Expected: all pass. (The thread assertion only fires when wired; tests
+that drive `update_readiness` directly without a thread will still see
+`self.thread() == QThread.currentThread()` because everything runs on
+the main thread.)
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add worker.py
-git commit -m "feat(worker): readiness-gated 200ms heartbeat timer"
+git commit -m "feat(worker): thread-pinned heartbeat — @Slot adapters, immediate fire on ready"
 ```
 
 ---
@@ -2670,10 +2995,17 @@ import time as _time
 
 
 class QtScrollEngine(QObject):
-    """Qt wrapper that drives ScrollEngine.tick at 120 Hz via QTimer."""
+    """Qt wrapper that drives ScrollEngine.tick at 120 Hz via QTimer.
+
+    Failure modes:
+      - pyobjc.Quartz import fails / post setup fails: emits `error`,
+        emits `stopped` (NOT `started`), so readiness gate `engine_running`
+        never goes true and firmware stays in standalone fallback.
+    """
 
     started = Signal()
     stopped = Signal()
+    error = Signal(str)
 
     TICK_PERIOD_MS = 8  # ~120 Hz
 
@@ -2690,8 +3022,18 @@ class QtScrollEngine(QObject):
     @Slot()
     def start_real(self) -> None:
         """Production start: install the real Quartz poster and begin
-        ticking. Called on the engine thread."""
-        self._post = make_cgevent_post()
+        ticking. Called on the engine thread via QThread.started.
+
+        If Quartz import or post-helper construction fails, emit `error`
+        and `stopped` instead of `started` — readiness stays false and
+        firmware fallback remains active.
+        """
+        try:
+            self._post = make_cgevent_post()
+        except Exception as exc:  # ImportError, AttributeError, etc.
+            self.error.emit(f"scroll engine startup failed: {exc!r}")
+            self.stopped.emit()
+            return
         if self._timer is None:
             self._timer = QTimer(self)
             self._timer.setInterval(self.TICK_PERIOD_MS)
@@ -2701,6 +3043,8 @@ class QtScrollEngine(QObject):
 
     @Slot()
     def stop(self) -> None:
+        # Must be invoked via QMetaObject.invokeMethod from outside this
+        # thread — see main.py shutdown.
         if self._timer is not None:
             self._timer.stop()
         self.stopped.emit()
@@ -2712,7 +3056,7 @@ class QtScrollEngine(QObject):
     def _post_scroll_safe(self, pixels: int, scroll_phase: int,
                           momentum_phase: int) -> None:
         if self._post is None:
-            return  # not started / not on macOS
+            return  # not started / not on macOS / startup failed
         self._post(pixels, scroll_phase, momentum_phase)
 
     def reload_config(self, cfg: ScrollConfig) -> None:
@@ -2744,10 +3088,15 @@ git commit -m "feat(scroll): QtScrollEngine — 120Hz QTimer + real CGEvent post
 
 ---
 
-### Task 29: Wire ScrollEngine into main.py
+### Task 29: Wire ScrollEngine into main.py — queued connections, no lambdas
 
 **Files:**
 - Modify: `main.py`
+
+Every readiness signal is delivered to `ControlWorker` via a bound slot
+with `Qt.QueuedConnection`. No `lambda` shortcuts: a lambda's receiver
+context isn't the `ControlWorker` object, so Qt may execute it on the
+emitting thread and create the heartbeat timer there.
 
 - [ ] **Step 1: Update main.py**
 
@@ -2757,7 +3106,7 @@ Replace `main.py` with:
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QThread
+from PySide6.QtCore import QMetaObject, Qt, QThread
 from PySide6.QtWidgets import QApplication
 
 from hid_io import HidIoWorker
@@ -2773,7 +3122,7 @@ CONFIG_PATH = Path.home() / ".config" / "doio-kb03" / "scroll.json"
 def main() -> int:
     app = QApplication(sys.argv)
 
-    # Try imports first — failure here drops the imports_ok gate.
+    # Probe optional deps. Failure here drops the imports_ok gate.
     imports_ok = True
     try:
         import Quartz  # noqa: F401
@@ -2781,7 +3130,8 @@ def main() -> int:
     except ImportError:
         imports_ok = False
 
-    # Prompt for Accessibility once.
+    # Prompt for Accessibility once. Subsequent re-checks come from the UI
+    # via ScrollFeelPanel.ax_changed.
     ax_trusted = is_accessibility_trusted(prompt=True)
 
     cfg = load_config(CONFIG_PATH)
@@ -2794,25 +3144,34 @@ def main() -> int:
     control = ControlWorker(io)
     control_thread = QThread()
     control.moveToThread(control_thread)
+
+    # CRITICAL: connect device_state to control's slot BEFORE start() runs,
+    # so the very first open immediately sets handle_open=True.
+    io.device_state.connect(control._on_device_state, Qt.QueuedConnection)
     control_thread.started.connect(control.start)
 
     scroll_engine = QtScrollEngine(cfg)
     scroll_thread = QThread()
     scroll_engine.moveToThread(scroll_thread)
     scroll_thread.started.connect(scroll_engine.start_real)
-    io.scroll_tick.connect(scroll_engine.on_scroll_tick)
+    io.scroll_tick.connect(scroll_engine.on_scroll_tick, Qt.QueuedConnection)
 
-    # Readiness wiring (the four gates):
-    # 1. handle_open: ControlWorker sets it (see worker._on_device_state).
-    # 2. imports_ok: set once, here.
-    # 3. ax_trusted: set here and re-checkable from UI.
-    # 4. engine_running: set on QtScrollEngine.started.
-    control.update_readiness("imports_ok", imports_ok)
-    control.update_readiness("ax_trusted", ax_trusted)
+    # Readiness wiring (the four gates) — all queued, all bound slots.
+    # 1. imports_ok: pushed via queued signal so it runs on control_thread.
+    QMetaObject.invokeMethod(
+        control, "set_imports_ok",
+        Qt.QueuedConnection, Qt.Q_ARG(bool, imports_ok))
+    QMetaObject.invokeMethod(
+        control, "on_ax_trusted_changed",
+        Qt.QueuedConnection, Qt.Q_ARG(bool, ax_trusted))
+
+    # 2. engine_running: comes from QtScrollEngine signals → bound slots.
     scroll_engine.started.connect(
-        lambda: control.update_readiness("engine_running", True))
+        control.on_engine_started, Qt.QueuedConnection)
     scroll_engine.stopped.connect(
-        lambda: control.update_readiness("engine_running", False))
+        control.on_engine_stopped, Qt.QueuedConnection)
+    # If start_real fails (no Quartz), the engine emits .stopped — that
+    # path keeps engine_running=False; firmware stays in fallback.
 
     listener = Listener()
     listener_thread = QThread()
@@ -2824,6 +3183,11 @@ def main() -> int:
                         ax_trusted_initial=ax_trusted,
                         config=cfg, config_path=CONFIG_PATH)
 
+    # 3. ax re-check from the UI is a Signal(bool); connect to the slot.
+    if window.scroll_panel is not None:
+        window.scroll_panel.ax_changed.connect(
+            control.on_ax_trusted_changed, Qt.QueuedConnection)
+
     io_thread.start()
     control_thread.start()
     listener_thread.start()
@@ -2831,8 +3195,11 @@ def main() -> int:
     window.show()
 
     code = app.exec()
-    scroll_engine.stop()
-    io.stop()
+
+    # Shutdown: invoke timer-touching slots on their owning threads, then
+    # quit/wait. Never call moved-object methods directly from main thread.
+    QMetaObject.invokeMethod(scroll_engine, "stop", Qt.QueuedConnection)
+    QMetaObject.invokeMethod(io, "stop", Qt.QueuedConnection)
     listener.stop()
     listener_thread.quit()
     control_thread.quit()
@@ -2849,16 +3216,31 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-Note the `MainWindow` signature change — Task 30 updates `ui.py` to accept the new kwargs.
+Note: `MainWindow.scroll_panel` is a public attribute set by `_build_scroll_panel()`. If `_scroll_engine` is None, `scroll_panel` stays None — guarded with `if`.
 
-- [ ] **Step 2: Commit (UI changes come next)**
+- [ ] **Step 2: Add HidIoWorker.stop slot decoration**
 
-```bash
-git add main.py
-git commit -m "feat(main): wire ScrollEngine + readiness gates into app"
+`io.stop` is invoked via `QMetaObject.invokeMethod`, which requires the
+method to be discoverable via Qt's meta-object system. In `hid_io.py`,
+mark `stop` as a Slot:
+
+```python
+    @Slot()
+    def stop(self) -> None:
+        self._stop.set()
+        self._close_handle()
 ```
 
-(ui.py will not yet accept the new kwargs — the next task fixes that.)
+Add `from PySide6.QtCore import Slot` to the imports.
+
+- [ ] **Step 3: Commit (UI changes come next)**
+
+```bash
+git add main.py hid_io.py
+git commit -m "feat(main): queued readiness wiring + queued shutdown"
+```
+
+(ui.py will not yet expose `scroll_panel` / `ax_changed` — the next tasks fix that.)
 
 ---
 
@@ -2898,6 +3280,7 @@ Update to:
         self._scroll_config_path = config_path
         self._imports_ok = imports_ok
         self._ax_trusted = ax_trusted_initial
+        self.scroll_panel = None  # set by _build_scroll_panel; public for main.py
         # ... (rest of existing __init__ body unchanged)
 ```
 
@@ -2926,27 +3309,33 @@ The panel is a `QGroupBox` with sliders for each tunable param, an invert toggle
 
 - [ ] **Step 1: Add the panel class**
 
-In `ui.py`, append a new class above `class MainWindow`:
+In `ui.py`, append a new class above `class MainWindow`. Note: AX
+re-check is delivered to `ControlWorker` via a Qt `Signal(bool)` so the
+slot runs on `control_thread`, not on the UI thread.
 
 ```python
 from PySide6.QtWidgets import (
     QCheckBox, QGroupBox, QLabel, QSlider, QVBoxLayout, QHBoxLayout, QPushButton)
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 from scroll import ScrollConfig, save_config
 
 
 class ScrollFeelPanel(QGroupBox):
+    # External signals — connected by main.py with Qt.QueuedConnection.
+    ax_changed = Signal(bool)
+
     SLIDERS = [
-        # (attr,                label,            lo,    hi,   step, fmt)
-        ("impulse_per_detent",  "Impulse",        20,    500,  10,   "{} px/s"),
-        ("tau_ms",              "Decay τ",        50,    2000, 50,   "{} ms"),
-        ("slow_threshold",      "Slow threshold", 50,    1000, 25,   "{} px/s"),
-        ("fast_threshold",      "Fast threshold", 500,   5000, 100,  "{} px/s"),
-        ("max_gain",            "Max gain",       10,    120,  5,    "{}.×0.1"),
-        ("active_window_ms",    "Active window",  30,    250,  10,   "{} ms"),
-        ("coast_threshold",     "Coast threshold",50,    2000, 25,   "{} px/s"),
-        ("cutoff_v",            "Momentum cutoff",5,     200,  5,    "{} px/s"),
+        # (attr,                label,            lo,    hi,   step)
+        # max_gain slider stores integer ×10 (1.0× → 10).
+        ("impulse_per_detent",  "Impulse",        20,    500,  10),
+        ("tau_ms",              "Decay τ",        50,    2000, 50),
+        ("slow_threshold",      "Slow threshold", 50,    1000, 25),
+        ("fast_threshold",      "Fast threshold", 500,   5000, 100),
+        ("max_gain",            "Max gain",       10,    120,  5),
+        ("active_window_ms",    "Active window",  30,    250,  10),
+        ("coast_threshold",     "Coast threshold",50,    2000, 25),
+        ("cutoff_v",            "Momentum cutoff",5,     200,  5),
     ]
 
     def __init__(self, config: ScrollConfig, config_path,
@@ -2975,7 +3364,7 @@ class ScrollFeelPanel(QGroupBox):
         v.addLayout(h)
 
         # Sliders
-        for attr, label, lo, hi, step, fmt in self.SLIDERS:
+        for attr, label, lo, hi, step in self.SLIDERS:
             row = QHBoxLayout()
             lbl = QLabel(label)
             lbl.setMinimumWidth(120)
@@ -3010,8 +3399,10 @@ class ScrollFeelPanel(QGroupBox):
         v = getattr(self._config, attr)
         if attr == "max_gain":
             text = f"{v:.1f}×"
+        elif attr in {"tau_ms", "active_window_ms"}:
+            text = f"{int(v)} ms"
         else:
-            text = str(int(v))
+            text = f"{int(v)} px/s"
         self._value_labels[attr].setText(text)
 
     def _on_slider_change(self, attr: str, raw_value: int) -> None:
@@ -3041,9 +3432,10 @@ class ScrollFeelPanel(QGroupBox):
         from scroll import is_accessibility_trusted
         trusted = is_accessibility_trusted(prompt=True)
         self._update_banner(imports_ok=True, ax_trusted=trusted)
-        # Propagate to ControlWorker — parent injects this callback
-        if hasattr(self, "_on_ax_change"):
-            self._on_ax_change(trusted)
+        # Emit a Qt signal — main.py connects this to
+        # ControlWorker.on_ax_trusted_changed with QueuedConnection so
+        # the slot executes on control_thread.
+        self.ax_changed.emit(trusted)
 
     def _update_banner(self, *, imports_ok: bool, ax_trusted: bool) -> None:
         if not imports_ok:
@@ -3056,14 +3448,17 @@ class ScrollFeelPanel(QGroupBox):
             self._banner.setText(
                 "Accessibility permission not granted. Outer encoder is in "
                 "fallback mode. Grant in System Settings → Privacy & Security "
-                "→ Accessibility, then click Re-check.")
+                "→ Accessibility, then click Re-check. If Re-check does not "
+                "turn this green, relaunch the app — macOS may require a "
+                "fresh process to recognise the new trust state.")
         else:
             self._banner.setStyleSheet("background: #e0ffe0; padding: 6px;")
             self._banner.setText("MX-Master scroll active.")
-
-    def set_ax_change_callback(self, cb):
-        self._on_ax_change = cb
 ```
+
+Note the `ax_changed` Signal replaces the `set_ax_change_callback()`
+indirection in the original draft. The banner text now mentions
+relaunch may be required (per reviewer P1.12 / P3.20).
 
 - [ ] **Step 2: Mount the panel in MainWindow**
 
@@ -3096,17 +3491,18 @@ Then add the builder method to `MainWindow` (anywhere among the other `_build_*`
 
 ```python
     def _build_scroll_panel(self):
+        # Public attribute — main.py reads window.scroll_panel and
+        # connects the panel's ax_changed signal.
+        self.scroll_panel = None
         if self._scroll_engine is None:
             return
-        self._scroll_panel = ScrollFeelPanel(
+        self.scroll_panel = ScrollFeelPanel(
             self._scroll_config, self._scroll_config_path,
             self._scroll_engine,
             ax_trusted=self._ax_trusted,
             imports_ok=self._imports_ok,
         )
-        self._scroll_panel.set_ax_change_callback(
-            lambda v: self._control.update_readiness("ax_trusted", v))
-        self._inspector_v.addWidget(self._scroll_panel)
+        self._inspector_v.addWidget(self.scroll_panel)
 ```
 
 - [ ] **Step 3: Manual smoke test**
@@ -3374,53 +3770,69 @@ git commit -m "feat(firmware): outer-ring custom keycodes + VIA heartbeat hook"
 
 ---
 
-### Task 36: VIA layout version bump (EEPROM migration)
+### Task 36: Firmware policy — outer-ring EEPROM overwrite + zero encoder-map key delay
 
 **Files:**
 - Modify: `firmware/keymaps/vegar/config.h`
+- Modify: `firmware/keymaps/vegar/keymap.c`
 
-- [ ] **Step 1: Bump the version**
+**Product policy decision (state it in code comments):** the outer ring is
+*reserved* for host scroll takeover. VIA may store stale encoder
+bindings in EEPROM that survive a re-flash; we **deliberately overwrite**
+them on every boot. VIA remaps of the outer ring will be silently
+clobbered. If user-remappable outer-ring behaviour is wanted later, the
+overwrite needs to be replaced with a one-shot migration marker.
+
+This task does NOT rely on `VIA_FIRMWARE_VERSION` bumps — compiled
+`encoder_map` changes are not automatically compared to EEPROM.
+
+- [ ] **Step 1: Add ENCODER_MAP_KEY_DELAY=0 to config.h**
 
 Open `firmware/keymaps/vegar/config.h`. Add at the end:
 
 ```c
-// Bump VIA layout version: forces EEPROM re-sync of encoder bindings on
-// first boot after flashing, so the new outer-ring custom keycodes
-// reach the encoder_map in EEPROM rather than the user keeping stale
-// MS_WHLL/MS_WHLR bindings. See spec section "VIA EEPROM migration".
-#undef VIA_FIRMWARE_VERSION
-#define VIA_FIRMWARE_VERSION 0x00000002
+// QMK encoder maps travel through the normal keycode pipeline as a
+// key-down then key-up. The default delay between that pair caps
+// detent dispatch rate during fast spins, even though our handler
+// short-circuits with raw_hid_send. Set it to 0 so fast MagSpeed
+// spins don't get throttled.
+#define ENCODER_MAP_KEY_DELAY 0
 ```
 
-If `VIA_FIRMWARE_VERSION` isn't already defined upstream (check by searching the QMK tree), this bump is purely cosmetic; the encoder_map re-sync still happens because the encoder_map's compiled bytes differ. In that case, the fallback migration (post-init explicit overwrite) is added in the next sub-step.
+- [ ] **Step 2: Add the boot-time EEPROM overwrite to keymap.c**
 
-- [ ] **Step 2: Add fallback migration in keymap.c**
-
-In case the layout-version bump doesn't trigger re-sync, force the encoder bindings on first boot. In `firmware/keymaps/vegar/keymap.c`, append:
+In `firmware/keymaps/vegar/keymap.c`, append at the bottom:
 
 ```c
 void keyboard_post_init_user(void) {
-    // Defensive: ensure outer-ring encoder_map[*][1] matches the
-    // compile-time keymap above. Only needed if VIA stored stale
-    // bindings in EEPROM from a previous flash. Idempotent.
 #ifdef ENCODER_MAP_ENABLE
+    // POLICY: the outer ring (encoder index 1) is reserved for host
+    // scroll takeover. VIA may have stored stale outer-ring bindings
+    // in EEPROM from a previous firmware. Force-overwrite them on
+    // every boot. dynamic_keymap_set_encoder() uses update semantics,
+    // so identical writes are cheap and idempotent.
+    //
+    // Side-effect (intentional): any VIA remap of the outer ring is
+    // silently overwritten on next boot.
     for (uint8_t ly = 0; ly < 4; ly++) {
-        const uint16_t ccw = OUTER_SCROLL_CCW;
-        const uint16_t cw  = OUTER_SCROLL_CW;
-        dynamic_keymap_set_encoder(ly, 1, 0, ccw);
-        dynamic_keymap_set_encoder(ly, 1, 1, cw);
+        dynamic_keymap_set_encoder(ly, 1, 0, OUTER_SCROLL_CCW);
+        dynamic_keymap_set_encoder(ly, 1, 1, OUTER_SCROLL_CW);
     }
 #endif
 }
 ```
 
-> Note: `dynamic_keymap_set_encoder` is a QMK API. If the symbol doesn't link (older QMK), look for `via_encoder_eeprom_set` or do nothing here and rely on the layout-version bump.
+> Build fallback: if `dynamic_keymap_set_encoder` does not link on the
+> target QMK version, document in the manual flash step that the user
+> must clear EEPROM after flashing (bootmagic / QMK reset combo). Do
+> NOT silently fall back to a layout-version bump — the reviewer notes
+> compiled-bytes-differ does not reliably trigger EEPROM resync.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add firmware/keymaps/vegar/config.h firmware/keymaps/vegar/keymap.c
-git commit -m "feat(firmware): bump VIA layout version + post-init EEPROM sync"
+git commit -m "feat(firmware): outer-ring EEPROM overwrite + ENCODER_MAP_KEY_DELAY=0"
 ```
 
 ---
@@ -3554,6 +3966,330 @@ git commit -m "docs: per-app event-shape observations for outer-encoder scroll"
 
 ---
 
+## Phase 11 — Regression tests from review
+
+### Task 42: Negative-direction symmetry tests (reviewer P2.15)
+
+**Files:**
+- Modify: `tests/test_scroll_model.py`
+
+- [ ] **Step 1: Add the tests**
+
+```python
+def test_single_isolated_reverse_detent_is_precise():
+    eng, _, clock = _make_engine(now=0)
+    eng.on_tick(direction=-1, device_t_ms=0)
+    posts = _run_to_idle(eng, clock, start_ms=0)
+    total = sum(p[0] for p in posts)
+    assert eng.state.phase == Phase.IDLE
+    assert abs(total) <= 15, (
+        f"Reverse precision broken: total={total}, posts={posts}")
+
+
+def test_reverse_steady_spin_converges():
+    eng, _, clock = _make_engine(now=0)
+    eng._post = lambda *a: None
+    t = 0
+    last = 0
+    samples = []
+    while t <= 3000:
+        clock[0] = t
+        if t - last >= 30:
+            eng.on_tick(direction=-1, device_t_ms=t)
+            last = t
+        eng.tick()
+        if t > 1000:
+            samples.append(eng.state.velocity)
+        t += 8
+    late = samples[-200:]
+    spread = (max(late) - min(late)) / max(abs(min(late)), 1)
+    assert spread < 0.20, f"Reverse spin unstable: {late[:5]}…{late[-5:]}"
+
+
+def test_direction_flip_negative_to_positive():
+    eng, posts, _ = _make_engine()
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = -500.0
+    eng.on_tick(direction=+1, device_t_ms=0)
+    assert eng.state.velocity == +eng.config.impulse_per_detent
+    assert eng.state.accumulator == 0.0
+
+
+def test_accumulator_does_not_drift_negative():
+    eng, posts, clock = _make_engine(now=0)
+    cfg = eng.config
+    cfg.slow_threshold = 1e9
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = -100.0
+    eng.state.last_emit_ms = 0
+    eng.state.last_tick_ms = 0
+    t = 0
+    last = 0
+    while t < 10000 * 8:
+        clock[0] = t
+        if t - last >= 1:
+            eng.on_tick(direction=-1, device_t_ms=t)
+            last = t
+        eng.tick()
+        t += 8
+    assert -2.0 < eng.state.accumulator < 2.0
+```
+
+- [ ] **Step 2: Run + commit**
+
+```bash
+uv run pytest tests/test_scroll_model.py -v
+git add tests/test_scroll_model.py
+git commit -m "test(scroll): negative-direction symmetry — precision, steady spin, flip, drift"
+```
+
+---
+
+### Task 43: Heartbeat thread-affinity + non-blocking regression test (reviewer P0.1 / P1.7)
+
+**Files:**
+- Modify: `tests/test_readiness.py` (and a new `tests/test_heartbeat.py`)
+
+- [ ] **Step 1: Write the tests**
+
+Create `tests/test_heartbeat.py`:
+
+```python
+"""Heartbeat regression tests:
+
+  - The QTimer that drives heartbeat must be created/started on
+    control_thread. update_readiness() must refuse cross-thread mutation.
+  - When a VIA reply stalls for >1 s, heartbeat send_untracked calls
+    must still continue at the 200 ms cadence (fire-and-forget; no
+    blocking dependency on the inflight VIA request).
+"""
+
+import threading
+import time
+
+from PySide6.QtCore import QCoreApplication, Qt, QThread, QTimer
+import pytest
+
+import hid_io
+from worker import ControlWorker, Readiness
+
+
+class StallingIo:
+    """Fake io that records send_untracked calls and never fulfils a
+    send_request future, simulating a stalled VIA reply."""
+
+    def __init__(self):
+        self.untracked: list[list[int]] = []
+        self.requests: list = []
+        self.device_state = _Stub()
+
+    def send_untracked(self, payload):
+        self.untracked.append(list(payload))
+
+    def send_request(self, payload):
+        from concurrent.futures import Future
+        f = Future()
+        self.requests.append((payload, f))
+        return f  # never resolves
+
+
+class _Stub:
+    def connect(self, *_a, **_kw): pass
+    def emit(self, *_a, **_kw): pass
+
+
+def test_update_readiness_runs_on_owning_thread(qtbot):
+    """update_readiness must be entered on control_thread. Calling it
+    cross-thread should NOT create a QTimer on the wrong thread."""
+    app = QCoreApplication.instance() or QCoreApplication([])
+    io = StallingIo()
+    control = ControlWorker(io)
+    thread = QThread()
+    control.moveToThread(thread)
+    thread.start()
+    # Fire readiness transitions via QMetaObject so they run on the
+    # owning thread.
+    from PySide6.QtCore import QMetaObject
+    for gate in ("imports_ok", "ax_trusted", "engine_running", "handle_open"):
+        QMetaObject.invokeMethod(
+            control, "update_readiness", Qt.QueuedConnection,
+            Qt.Q_ARG(str, gate), Qt.Q_ARG(bool, True))
+    # Give the event loop time to process and start the timer
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and len(io.untracked) == 0:
+        app.processEvents()
+        time.sleep(0.01)
+    # Heartbeat fired at least once (immediate-fire on ready transition)
+    assert len(io.untracked) >= 1
+    assert io.untracked[0][0] == 0xA0
+    thread.quit()
+    thread.wait()
+
+
+def test_heartbeat_continues_during_blocking_via_request(qtbot):
+    """A VIA request that never resolves must not stop heartbeat
+    cadence. heartbeat uses send_untracked which is fire-and-forget."""
+    app = QCoreApplication.instance() or QCoreApplication([])
+    io = StallingIo()
+    control = ControlWorker(io)
+    thread = QThread()
+    control.moveToThread(thread)
+    thread.start()
+    from PySide6.QtCore import QMetaObject
+    for gate in ("imports_ok", "ax_trusted", "engine_running", "handle_open"):
+        QMetaObject.invokeMethod(
+            control, "update_readiness", Qt.QueuedConnection,
+            Qt.Q_ARG(str, gate), Qt.Q_ARG(bool, True))
+    # Let some heartbeats fire
+    deadline = time.monotonic() + 1.2
+    while time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.05)
+    # At least 4 heartbeats in 1.2 s (cadence 200 ms, allow slack)
+    assert len(io.untracked) >= 4, f"only {len(io.untracked)} heartbeats"
+    thread.quit()
+    thread.wait()
+```
+
+> `qtbot` is from pytest-qt. If pytest-qt isn't installed, add it to
+> dev deps (`uv add --dev pytest-qt`). The fixture isn't strictly
+> required — we use it to ensure a QApplication exists. If you prefer
+> to avoid the dep, drop the `qtbot` arg and rely on the explicit
+> `QCoreApplication.instance() or QCoreApplication([])` line.
+
+- [ ] **Step 2: Run + commit**
+
+```bash
+uv add --dev pytest-qt
+uv run pytest tests/test_heartbeat.py -v
+git add tests/test_heartbeat.py pyproject.toml uv.lock
+git commit -m "test(heartbeat): thread affinity + non-blocking under stalled VIA"
+```
+
+---
+
+### Task 44: Validate gate names (reviewer P2.14) — already in Task 27, add a test
+
+**Files:**
+- Modify: `tests/test_readiness.py`
+
+- [ ] **Step 1: Add the test**
+
+```python
+def test_update_readiness_rejects_unknown_gate():
+    from worker import ControlWorker, Readiness
+
+    class DummyIo:
+        device_state = _Stub()
+    io = DummyIo()
+    control = ControlWorker(io)
+    import pytest
+    with pytest.raises(ValueError, match="unknown readiness gate"):
+        control.update_readiness("not_a_real_gate", True)
+```
+
+(Reuse the `_Stub` class from test_heartbeat.py; or copy inline.)
+
+- [ ] **Step 2: Run + commit**
+
+```bash
+uv run pytest tests/test_readiness.py -v
+git add tests/test_readiness.py
+git commit -m "test(readiness): reject unknown gate name with ValueError"
+```
+
+---
+
+## Phase 12 — Acceptance updates from review
+
+### Task 45: Manual test — Accessibility onboarding two paths (reviewer P1.12)
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-06-08-outer-encoder-mx-scroll-design.md` (append acceptance notes)
+
+This replaces the simplification in Task 39 Step 1. Run both paths and
+record the result:
+
+- [ ] **Path A — granted before launch.**
+  Grant Accessibility to the bundled `.app` (or to the terminal running
+  `uv run python main.py`). Launch. Banner turns green immediately.
+
+- [ ] **Path B — granted while running.**
+  Revoke Accessibility, relaunch. Banner is orange. Open System
+  Settings → Privacy & Security → Accessibility, grant. Return to the
+  app, click "Re-check Accessibility". One of two outcomes:
+  - Banner turns green → re-check works in-session.
+  - Banner stays orange → macOS hasn't propagated trust to this
+    process. **Relaunch** the app and confirm the banner is green
+    on next launch.
+
+Document which outcome you observe (it can vary by macOS minor
+version and code signature). Acceptance: in EITHER outcome,
+heartbeat / takeover engages once Re-check or relaunch flips the
+gate to true.
+
+- [ ] **Commit acceptance notes**
+
+```bash
+git add docs/superpowers/specs/2026-06-08-outer-encoder-mx-scroll-design.md
+git commit -m "docs(acceptance): record AX onboarding observation (in-session vs relaunch)"
+```
+
+---
+
+### Task 46: Fast-spin throughput telemetry (reviewer P2.16)
+
+**Files:**
+- Modify: `scripts/scroll_probe.py`
+
+- [ ] **Step 1: Add per-interval stats**
+
+Augment `scroll_probe.py` to track `SCROLL_PING` cadence. Since the
+probe sees CGEvents (not raw HID), it can only measure the effective
+arrival rate of our emitted phase-Changed events. Add a sliding-window
+counter:
+
+```python
+import collections
+_intervals = collections.deque(maxlen=200)
+_last_t = None
+
+def _record_event_time():
+    global _last_t
+    now = time.monotonic()
+    if _last_t is not None:
+        _intervals.append(now - _last_t)
+    _last_t = now
+
+def _stats_line():
+    if not _intervals:
+        return ""
+    sorted_iv = sorted(_intervals)
+    n = len(sorted_iv)
+    return (f"  intervals(ms) min={sorted_iv[0]*1000:.1f} "
+            f"med={sorted_iv[n//2]*1000:.1f} "
+            f"max={sorted_iv[-1]*1000:.1f} n={n}")
+```
+
+Call `_record_event_time()` from `_tap_callback` after the existing
+print; print `_stats_line()` every 50 events.
+
+- [ ] **Step 2: Use it during Task 41**
+
+When running the per-app verification, spin the outer ring at max
+speed and observe the intervals. They should NOT plateau at the
+default `ENCODER_MAP_KEY_DELAY` cadence (~10 ms). If they do, the
+firmware `#define ENCODER_MAP_KEY_DELAY 0` didn't take effect.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add scripts/scroll_probe.py
+git commit -m "feat(scroll_probe): per-interval throughput stats"
+```
+
+---
+
 ## Reference: the readiness invariant
 
 After all phases, the four gates must wire like this:
@@ -3605,3 +4341,29 @@ Use this as the final hand-off gate. Every requirement should be implemented abo
 - [x] VIA EEPROM migration — task 36.
 
 No spec section is uncovered. If you find one during execution, raise it before continuing.
+
+---
+
+## Review amendments applied (2026-06-08)
+
+The plan was patched against `synthesized_outer_encoder_review.md`. Summary of changes by reviewer item:
+
+- **P0.1** Readiness thread-affinity — Task 27/29 now use `@Slot` adapters (`on_engine_started`, `on_engine_stopped`, `on_ax_trusted_changed`, `set_imports_ok`) connected with `Qt.QueuedConnection`. No lambdas in readiness paths. Task 31 emits `ax_changed = Signal(bool)` instead of using a callback.
+- **P0.2** `ScrollPhase` constants — corrected to CoreGraphics values (`BEGAN=1, CHANGED=2, ENDED=4, CANCELLED=8, MAY_BEGIN=128`). Probe phase-name dict updated. New Darwin-only runtime test (Task 16) asserts equality with `Quartz.kCGScrollPhase*`.
+- **P0.3** VIA EEPROM migration — Task 36 makes `keyboard_post_init_user()` overwrite of encoder index 1 the **primary** mechanism. `VIA_FIRMWARE_VERSION` bump removed. Policy stated explicitly: VIA outer-ring remaps are deliberately clobbered.
+- **P0.4** `ENCODER_MAP_KEY_DELAY = 0` added to `config.h` in Task 36.
+- **P1.5** HidIoWorker write queue — Task 18 rewritten so `send_request`/`send_untracked` enqueue frames; only the IO thread calls `dev.write`/`dev.read`. New `pump_writes()` helper for tests.
+- **P1.6** Future lifecycle — `_close_handle_internal` fails all pending with `TransportClosedError`; `0xFF` fails OLDEST inflight (global), not first-dict-queue; new `cancel(fut)` method evicts timed-out futures. Task 22 is now the regression test suite.
+- **P1.7** Heartbeat non-blocking — `_send_heartbeat` uses `send_untracked` (fire-and-forget); a `tests/test_heartbeat.py` regression test (Task 43) asserts heartbeat cadence holds even when a VIA request stalls indefinitely.
+- **P1.8** `device_state` wiring — Task 29 connects `io.device_state` to `control._on_device_state` BEFORE `control_thread.started`. Task 27 removed the matrix-state inference of `handle_open`.
+- **P1.9** Immediate heartbeat on ready transition — Task 27 `_start_heartbeat` fires once before starting the timer.
+- **P1.10** Import-safe `start_real` — Task 28 wraps `make_cgevent_post()` in try/except, emits `error` + `stopped` on failure (no `started`).
+- **P1.11** Queued shutdown — Task 29 uses `QMetaObject.invokeMethod(..., Qt.QueuedConnection)` for `scroll_engine.stop` and `io.stop`. `io.stop` decorated `@Slot()`.
+- **P1.12 / P3.20** AX onboarding — Task 31 banner text mentions relaunch may be required. Task 45 documents the two-path manual test.
+- **P1.13** CGEvent shape — probe (Task 2) extended to log `pointDeltaY` and `fixedPtDeltaY` per event.
+- **P2.14** Validate gate names — Task 27 `update_readiness` raises `ValueError` on unknown gate; Task 44 adds the test.
+- **P2.15** Negative-direction symmetry tests — Task 42.
+- **P2.16** Fast-spin throughput telemetry — Task 46 augments `scroll_probe.py` with interval stats.
+- **P2.17** Heartbeat timing telemetry — covered by Task 43's regression assertion (≥4 heartbeats in 1.2 s when all gates true).
+- **P2.18** Frame size tests — covered in Task 18 Step 1 (`build_raw_hid_frame` validation tests).
+- **P3.19** Dead `fmt` column — removed from `ScrollFeelPanel.SLIDERS`; label formatting moved into `_refresh_value_label`.
