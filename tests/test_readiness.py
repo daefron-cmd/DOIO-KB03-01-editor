@@ -1,6 +1,11 @@
 from worker import Readiness
 
 
+class _Stub:
+    def connect(self, *_a, **_kw): pass
+    def emit(self, *_a, **_kw): pass
+
+
 def test_readiness_default_is_not_ready():
     r = Readiness()
     assert not r.is_ready()
@@ -24,3 +29,15 @@ def test_readiness_loses_state_when_any_gate_drops():
     assert r.is_ready()
     r.handle_open = False
     assert not r.is_ready()
+
+
+def test_update_readiness_rejects_unknown_gate():
+    from worker import ControlWorker, Readiness
+
+    class DummyIo:
+        device_state = _Stub()
+    io = DummyIo()
+    control = ControlWorker(io)
+    import pytest
+    with pytest.raises(ValueError, match="unknown readiness gate"):
+        control.update_readiness("not_a_real_gate", True)
