@@ -41,3 +41,20 @@ def test_update_readiness_rejects_unknown_gate():
     import pytest
     with pytest.raises(ValueError, match="unknown readiness gate"):
         control.update_readiness("not_a_real_gate", True)
+
+
+def test_update_readiness_rejects_method_name_as_gate():
+    """`hasattr` would pass for "is_ready" (a method on Readiness).
+    Whitelisting field names prevents clobbering the method via setattr."""
+    from worker import ControlWorker
+
+    class DummyIo:
+        device_state = _Stub()
+    io = DummyIo()
+    control = ControlWorker(io)
+    import pytest
+    with pytest.raises(ValueError, match="unknown readiness gate"):
+        control.update_readiness("is_ready", True)
+    # is_ready still callable and not clobbered
+    assert callable(control._readiness.is_ready)
+    assert control._readiness.is_ready() is False

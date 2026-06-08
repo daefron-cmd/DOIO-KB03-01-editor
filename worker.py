@@ -5,8 +5,9 @@ requests via io.send_request(builder), receives results via Future,
 and emits the same Qt signals it always did.
 """
 
+import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
@@ -30,6 +31,9 @@ class Readiness:
         )
 
 
+_READINESS_GATES = frozenset(f.name for f in fields(Readiness))
+
+
 class ControlWorker(QObject):
     snapshot_ready = Signal(object)
     device_state = Signal(str)
@@ -41,20 +45,30 @@ class ControlWorker(QObject):
     matrix_release = Signal(object)
 
     REPLY_TIMEOUT_S = 1.0
+    HEARTBEAT_INTERVAL_S = 0.2
 
     def __init__(self, io):
         super().__init__()
         self._io = io
         self._matrix_timer = None
         self._heartbeat_timer = None
+        self._last_heartbeat_s = 0.0
         self._pressed_cols: set[int] = set()
         self._matrix_state = ""
         self._readiness = Readiness()
 
     def _request(self, payload: list[int]) -> list[int] | None:
         fut = self._io.send_request(payload)
+        deadline = time.monotonic() + self.REPLY_TIMEOUT_S
         try:
-            return fut.result(timeout=self.REPLY_TIMEOUT_S)
+            while True:
+                timeout = min(0.05, max(0.0, deadline - time.monotonic()))
+                try:
+                    return fut.result(timeout=timeout)
+                except FutureTimeoutError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    self._send_heartbeat_if_due()
         except FutureTimeoutError:
             # Timed-out future is still in HidIoWorker's queues. Remove
             # it so a late reply doesn't get mis-attributed.
@@ -186,7 +200,7 @@ class ControlWorker(QObject):
         (on_engine_started/stopped, on_ax_trusted_changed, etc.) so
         delivery is queued onto this thread.
         """
-        if not hasattr(self._readiness, gate):
+        if gate not in _READINESS_GATES:
             raise ValueError(f"unknown readiness gate: {gate}")
         was_ready = self._readiness.is_ready()
         setattr(self._readiness, gate, value)
@@ -245,3 +259,10 @@ class ControlWorker(QObject):
         # request is in flight on the IO thread, the heartbeat enqueues
         # and the IO loop drains it without waiting for a reply.
         self._io.send_untracked([0xA0, 0x01])
+        self._last_heartbeat_s = time.monotonic()
+
+    def _send_heartbeat_if_due(self) -> None:
+        if not self._readiness.is_ready():
+            return
+        if time.monotonic() - self._last_heartbeat_s >= self.HEARTBEAT_INTERVAL_S:
+            self._send_heartbeat()
