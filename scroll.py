@@ -88,6 +88,33 @@ class ScrollEngine:
         self._now = now_fn
         self._post = post_scroll
 
+    def enter_active(self, now_ms: int) -> None:
+        self.state.phase = Phase.ACTIVE
+        self.state.last_tick_ms = now_ms
+        self.state.last_emit_ms = now_ms
+        self.state.accumulator = 0.0
+        self._post(0, ScrollPhase.BEGAN, MomentumPhase.NONE)
+
+    def enter_momentum(self, now_ms: int) -> None:
+        self.state.phase = Phase.MOMENTUM
+        self.state.last_tick_ms = now_ms
+        self.state.last_emit_ms = now_ms
+        self._post(0, ScrollPhase.ENDED, MomentumPhase.NONE)
+        self._post(0, ScrollPhase.NONE, MomentumPhase.BEGAN)
+
+    def enter_idle(self, *, post_ended: bool) -> None:
+        if post_ended:
+            self._post(0, ScrollPhase.ENDED, MomentumPhase.NONE)
+        self.state.velocity = 0.0
+        self.state.accumulator = 0.0
+        self.state.phase = Phase.IDLE
+
+    def enter_idle_from_momentum(self) -> None:
+        self._post(0, ScrollPhase.NONE, MomentumPhase.ENDED)
+        self.state.velocity = 0.0
+        self.state.accumulator = 0.0
+        self.state.phase = Phase.IDLE
+
 
 def magspeed_gain(abs_v: float, c: ScrollConfig) -> float:
     if abs_v <= c.slow_threshold:
