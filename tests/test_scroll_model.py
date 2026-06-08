@@ -339,3 +339,22 @@ def test_steady_spin_converges_to_stable_velocity():
     spread = (v_max - v_min) / max(abs(v_max), 1)
     assert spread < 0.20, (
         f"Velocity unstable in late phase: min={v_min:.1f} max={v_max:.1f}")
+
+
+def test_dt_clamp_prevents_huge_first_frame():
+    """If the event loop stalls for 5 seconds, the first tick after the
+    stall must not emit a giant burst."""
+    eng, posts, clock = _make_engine(now=0)
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = 1000.0
+    eng.state.last_emit_ms = 0
+    eng.state.last_tick_ms = 5000  # detent JUST arrived at t=5000
+    clock[0] = 5000
+    eng.tick()
+    # No phase transition (active_window check sees 0 ms since detent).
+    # Damping uses dt_s clamped to 50ms.
+    assert posts
+    deltas = [p[0] for p in posts if p[1] == ScrollPhase.CHANGED]
+    assert deltas, f"expected an ACTIVE emit, got {posts}"
+    assert all(abs(d) < 300 for d in deltas), (
+        f"dt-clamp failed: emits {deltas}")
