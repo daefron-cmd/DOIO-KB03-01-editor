@@ -91,3 +91,20 @@ bool via_command_kb(uint8_t *data, uint8_t length) {
 void housekeeping_task_user(void) {
     inertia_tick();
 }
+
+void keyboard_post_init_user(void) {
+#ifdef ENCODER_MAP_ENABLE
+    // POLICY: the outer ring (encoder index 1) is reserved for host
+    // scroll takeover. VIA may have stored stale outer-ring bindings
+    // in EEPROM from a previous firmware. Force-overwrite them on
+    // every boot. dynamic_keymap_set_encoder() uses update semantics,
+    // so identical writes are cheap and idempotent.
+    //
+    // Side-effect (intentional): any VIA remap of the outer ring is
+    // silently overwritten on next boot.
+    for (uint8_t ly = 0; ly < 4; ly++) {
+        dynamic_keymap_set_encoder(ly, 1, 0, OUTER_SCROLL_CCW);
+        dynamic_keymap_set_encoder(ly, 1, 1, OUTER_SCROLL_CW);
+    }
+#endif
+}

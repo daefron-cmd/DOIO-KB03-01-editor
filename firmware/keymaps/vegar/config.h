@@ -35,3 +35,10 @@
 // Lower = ramps up faster.
 // Stock default: 40.
 #define MOUSEKEY_WHEEL_TIME_TO_MAX 40
+
+// QMK encoder maps travel through the normal keycode pipeline as a
+// key-down then key-up. The default delay between that pair caps
+// detent dispatch rate during fast spins, even though our handler
+// short-circuits with raw_hid_send. Set it to 0 so fast MagSpeed
+// spins don't get throttled.
+#define ENCODER_MAP_KEY_DELAY 0
