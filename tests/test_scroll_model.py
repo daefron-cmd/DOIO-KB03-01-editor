@@ -122,3 +122,60 @@ def test_enter_idle_from_momentum_posts_one_momentum_ended():
     assert eng.state.velocity == 0.0
     assert eng.state.accumulator == 0.0
     assert posts == [(0, ScrollPhase.NONE, MomentumPhase.ENDED)]
+
+
+import math
+
+
+def test_tick_in_idle_does_nothing():
+    eng, posts, _ = _make_engine()
+    eng.tick()
+    assert posts == []
+
+
+def test_tick_in_active_emits_pixels_and_damps_velocity():
+    eng, posts, clock = _make_engine(now=0)
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = 1000.0
+    eng.state.last_emit_ms = 0
+    eng.state.last_tick_ms = 0
+    clock[0] = 10  # 10 ms tick
+    eng.tick()
+    expected_v_after_damp = 1000.0 * math.exp(-0.010 / 0.400)
+    assert abs(eng.state.velocity - expected_v_after_damp) < 0.5
+    # gain at 1000 with defaults (slow=200, fast=1500, max=6):
+    # t = (1000-200)/(1500-200) = 0.615 → gain ≈ 1 + 0.615*5 ≈ 4.08
+    # pixels_f ≈ 1000 * 4.08 * 0.010 ≈ 40.8
+    assert posts
+    assert posts[0][1] == ScrollPhase.CHANGED
+    assert posts[0][2] == MomentumPhase.NONE
+    assert 30 <= posts[0][0] <= 50
+
+
+def test_tick_in_momentum_uses_momentum_phase():
+    eng, posts, clock = _make_engine(now=0)
+    eng.state.phase = Phase.MOMENTUM
+    eng.state.velocity = 500.0
+    eng.state.last_emit_ms = 0
+    eng.state.last_tick_ms = 0
+    clock[0] = 10
+    eng.tick()
+    assert posts
+    assert posts[0][1] == ScrollPhase.NONE
+    assert posts[0][2] == MomentumPhase.CHANGED
+
+
+def test_tick_accumulator_carries_fractional_pixels():
+    eng, posts, clock = _make_engine(now=0)
+    # craft a velocity that produces ~3.5 px per tick at gain=1
+    cfg = eng.config
+    cfg.slow_threshold = 1e9  # force gain=1
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = 350.0
+    eng.state.last_emit_ms = 0
+    eng.state.last_tick_ms = 0
+    # tick at 10 ms → output ≈ 350 * 0.010 ≈ 3.5 px → int 3, acc 0.5 (before damp drift)
+    clock[0] = 10
+    eng.tick()
+    assert posts[0][0] == 3
+    assert 0.3 < eng.state.accumulator < 0.6

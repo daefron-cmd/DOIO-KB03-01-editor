@@ -8,6 +8,7 @@ engine so the model is unit-testable without macOS.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -114,6 +115,28 @@ class ScrollEngine:
         self.state.velocity = 0.0
         self.state.accumulator = 0.0
         self.state.phase = Phase.IDLE
+
+    def tick(self) -> None:
+        if self.state.phase == Phase.IDLE:
+            return
+        now = self._now()
+        dt_s = max(0.0, min((now - self.state.last_emit_ms) / 1000.0, 0.050))
+        tau_s = self.config.tau_ms / 1000.0
+
+        # Damped velocity (applied in both ACTIVE and MOMENTUM)
+        self.state.velocity *= math.exp(-dt_s / tau_s)
+
+        # Emit
+        gain = magspeed_gain(abs(self.state.velocity), self.config)
+        pixels_f = self.state.velocity * gain * dt_s + self.state.accumulator
+        pixels = int(pixels_f)
+        self.state.accumulator = pixels_f - pixels
+        if pixels != 0:
+            if self.state.phase == Phase.MOMENTUM:
+                self._post(pixels, ScrollPhase.NONE, MomentumPhase.CHANGED)
+            else:
+                self._post(pixels, ScrollPhase.CHANGED, MomentumPhase.NONE)
+        self.state.last_emit_ms = now
 
 
 def magspeed_gain(abs_v: float, c: ScrollConfig) -> float:
