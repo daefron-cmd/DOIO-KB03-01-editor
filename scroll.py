@@ -153,6 +153,24 @@ class ScrollEngine:
                 self._post(pixels, ScrollPhase.CHANGED, MomentumPhase.NONE)
         self.state.last_emit_ms = now
 
+    def on_tick(self, direction: int, device_t_ms: int) -> None:
+        """Called when a SCROLL_PING arrives. direction is +1 or -1."""
+        now = self._now()
+        signed_impulse = self.config.impulse_per_detent * direction
+        if self.config.invert:
+            signed_impulse = -signed_impulse
+
+        if self.state.phase == Phase.IDLE:
+            self.enter_active(now)
+
+        new_v = self.state.velocity + signed_impulse
+        if new_v > self.config.v_max:
+            new_v = self.config.v_max
+        elif new_v < -self.config.v_max:
+            new_v = -self.config.v_max
+        self.state.velocity = new_v
+        self.state.last_tick_ms = now
+
 
 def magspeed_gain(abs_v: float, c: ScrollConfig) -> float:
     if abs_v <= c.slow_threshold:

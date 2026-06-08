@@ -219,3 +219,33 @@ def test_momentum_ends_when_velocity_below_cutoff():
     assert eng.state.phase == Phase.IDLE
     assert eng.state.velocity == 0.0
     assert posts == [(0, ScrollPhase.NONE, MomentumPhase.ENDED)]
+
+
+def test_on_tick_from_idle_enters_active_and_adds_impulse():
+    eng, posts, clock = _make_engine(now=100)
+    eng.on_tick(direction=+1, device_t_ms=12345)
+    assert eng.state.phase == Phase.ACTIVE
+    assert eng.state.velocity == eng.config.impulse_per_detent
+    assert eng.state.last_tick_ms == 100
+    assert posts == [(0, ScrollPhase.BEGAN, MomentumPhase.NONE)]
+
+
+def test_on_tick_direction_is_signed():
+    eng, posts, _ = _make_engine(now=0)
+    eng.on_tick(direction=-1, device_t_ms=0)
+    assert eng.state.velocity == -eng.config.impulse_per_detent
+
+
+def test_on_tick_clamps_to_v_max():
+    eng, posts, _ = _make_engine(now=0)
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = eng.config.v_max - 10
+    eng.on_tick(direction=+1, device_t_ms=0)
+    assert eng.state.velocity == eng.config.v_max
+
+
+def test_on_tick_invert_flips_sign():
+    eng, posts, _ = _make_engine()
+    eng.config.invert = True
+    eng.on_tick(direction=+1, device_t_ms=0)
+    assert eng.state.velocity == -eng.config.impulse_per_detent
