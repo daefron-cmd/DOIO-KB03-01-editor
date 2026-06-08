@@ -11,10 +11,31 @@ Run with the GUI closed — it does not touch 0xFF60.
 
 from __future__ import annotations
 
+import collections
 import sys
 import time
 
 import Quartz
+
+
+_intervals = collections.deque(maxlen=200)
+_last_t = None
+
+def _record_event_time():
+    global _last_t
+    now = time.monotonic()
+    if _last_t is not None:
+        _intervals.append(now - _last_t)
+    _last_t = now
+
+def _stats_line():
+    if not _intervals:
+        return ""
+    sorted_iv = sorted(_intervals)
+    n = len(sorted_iv)
+    return (f"  intervals(ms) min={sorted_iv[0]*1000:.1f} "
+            f"med={sorted_iv[n//2]*1000:.1f} "
+            f"max={sorted_iv[-1]*1000:.1f} n={n}")
 
 
 SCROLL_WHEEL_EVENT = Quartz.kCGEventScrollWheel
@@ -42,7 +63,10 @@ def _momentum_name(value: int) -> str:
     }.get(value, f"unknown({value})")
 
 
+_event_count = 0
+
 def _tap_callback(proxy, type_, ev, refcon):
+    global _event_count
     if type_ != SCROLL_WHEEL_EVENT:
         return ev
     g = Quartz.CGEventGetIntegerValueField
@@ -63,6 +87,10 @@ def _tap_callback(proxy, type_, ev, refcon):
         f"deltaY={dy:>5} pointDeltaY={pdy:>5} fixedPtDeltaY={fpdy:>8.2f}",
         flush=True,
     )
+    _record_event_time()
+    _event_count += 1
+    if _event_count % 50 == 0:
+        print(_stats_line(), file=sys.stderr, flush=True)
     return ev
 
 
