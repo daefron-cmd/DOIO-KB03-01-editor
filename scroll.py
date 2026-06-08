@@ -8,9 +8,11 @@ engine so the model is unit-testable without macOS.
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from enum import Enum
+from pathlib import Path
 
 
 class Phase(Enum):
@@ -197,3 +199,56 @@ def magspeed_gain(abs_v: float, c: ScrollConfig) -> float:
         return c.max_gain
     t = (abs_v - c.slow_threshold) / (c.fast_threshold - c.slow_threshold)
     return 1.0 + t * (c.max_gain - 1.0)
+
+
+_CLAMPS: dict[str, tuple[float, float]] = {
+    "impulse_per_detent": (20.0, 500.0),
+    "tau_ms": (50, 2000),
+    "slow_threshold": (50.0, 1000.0),
+    "fast_threshold": (500.0, 5000.0),
+    "max_gain": (1.0, 12.0),
+    "active_window_ms": (30, 250),
+    "coast_threshold": (50.0, 2000.0),
+    "cutoff_v": (5.0, 200.0),
+    "v_max": (500.0, 25000.0),
+}
+
+
+def _clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+
+def load_config(path: Path) -> ScrollConfig:
+    defaults = ScrollConfig()
+    try:
+        raw = json.loads(Path(path).read_text())
+        if not isinstance(raw, dict):
+            return defaults
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return defaults
+
+    valid = {f.name for f in fields(ScrollConfig)}
+    merged = asdict(defaults)
+    for k, v in raw.items():
+        if k not in valid:
+            continue
+        if k == "invert":
+            merged[k] = bool(v)
+            continue
+        if k in _CLAMPS:
+            lo, hi = _CLAMPS[k]
+            try:
+                merged[k] = _clamp(type(merged[k])(v), lo, hi)
+            except (TypeError, ValueError):
+                continue
+    cfg = ScrollConfig(**merged)
+    # Enforce coast_threshold >= cutoff_v
+    if cfg.coast_threshold < cfg.cutoff_v:
+        cfg.coast_threshold = cfg.cutoff_v
+    return cfg
+
+
+def save_config(cfg: ScrollConfig, path: Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(cfg), indent=2))
