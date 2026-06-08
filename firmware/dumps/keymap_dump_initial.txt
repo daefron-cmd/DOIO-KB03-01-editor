@@ -1,0 +1,28 @@
+Layer count: 4
+
+=== Matrix probe (rows 0..7, cols 0..7) ===
+  Bounding box of non-empty cells: rows 0..0, cols 0..5  =>  matrix is at least 1x6
+
+  Layer 0:
+    R0: 0x0028 KC_ENTER | 0x00AE KC_MEDIA_PLAY_PAUSE | 0x0005 KC_B | 0x5201 TO(L1) | 0x00A8 KC_AUDIO_MUTE | 0x0001 KC_TRANSPARENT
+
+  Layer 1:
+    R0: 0x011D | 0x0304 | 0x0708 | 0x5202 TO(L2) | 0x0316 | 0x0001 KC_TRANSPARENT
+
+  Layer 2:
+    R0: 0x0310 | 0x002C KC_SPACE | 0x0210 | 0x5203 TO(L3) | 0x0110 | 0x0001 KC_TRANSPARENT
+
+  Layer 3:
+    R0: 0x7828 | 0x7821 | 0x7827 | 0x5200 TO(L0) | 0x7E41 | 0x0001 KC_TRANSPARENT
+
+=== Encoder probe (index 0..3) ===
+  Encoder #0:
+    Layer 0: CCW=0x00AC KC_MEDIA_PREV_TRACK  CW=0x00AB KC_MEDIA_NEXT_TRACK
+    Layer 1: CCW=0x012D  CW=0x012E
+    Layer 2: CCW=0x0050 KC_LEFT  CW=0x004F KC_RIGHT
+    Layer 3: CCW=0x0001 KC_TRANSPARENT  CW=0x0001 KC_TRANSPARENT
+  Encoder #1:
+    Layer 0: CCW=0x00DA  CW=0x00D9
+    Layer 1: CCW=0x0030 KC_RIGHT_BRACKET  CW=0x002F KC_LEFT_BRACKET
+    Layer 2: CCW=0x04D9  CW=0x04DA
+    Layer 3: CCW=0x0001 KC_TRANSPARENT  CW=0x0001 KC_TRANSPARENT

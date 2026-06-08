@@ -92,6 +92,19 @@ uv run python probe.py --vid 0xFEED --pid 0x6060
 Prints the HID interface table, the libusb descriptor tree, and a verdict on
 whether the device looks like QMK+VIA.
 
+### Dumping the keymap and matrix shape
+
+```bash
+uv run python scripts/keymap_dump.py                # 8x8 probe rectangle, 4 encoders
+uv run python scripts/keymap_dump.py --rows 4 --cols 6
+```
+
+Read-only sweep of `id_dynamic_keymap_get_keycode` over a generous rectangle
+and `id_dynamic_keymap_get_encoder` for a few indices. The bounding box of
+non-empty cells gives you the matrix shape on a device whose layout isn't
+hardcoded into `core.py`. **Close the GUI before running it** — same
+single-owner caveat as the LED probe.
+
 ### Verifying lighting effects
 
 `scripts/probe_led_effects.py` walks effect indices 0..31, asks you what each
@@ -102,6 +115,22 @@ the VIA raw-HID interface is strictly single-owner (see Caveats).
 ```bash
 uv run python scripts/probe_led_effects.py --max-index 31
 ```
+
+## Custom firmware
+
+The host app reaches everything VIA exposes at runtime. Things baked at compile
+time — `MOUSEKEY_WHEEL_*` constants, encoder maps when `ENCODER_MAP_ENABLE` is
+on, anything below the VIA layer — live in `firmware/`:
+
+- `firmware/keymaps/vegar/` — the custom keymap source (4-layer mouse / media /
+  lights layout with tuned mousekey wheel constants).
+- `firmware/dumps/` — the `.bin`/`.hex` images actually flashed onto this unit,
+  plus a stock-default rescue image to roll back to.
+- `firmware/build.sh` — wraps `make doio/kb03:<keymap>`. Symlinks
+  `firmware/keymaps/*/` into a sibling QMK checkout on first build.
+
+See `firmware/README.md` for the one-time QMK setup and the flash flow. The
+QMK tree itself is gitignored — clone it per machine.
 
 ## Build a macOS `.app`
 

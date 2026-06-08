@@ -1,0 +1,3 @@
+# Full QMK checkout — gitignored, has its own .git, hundreds of MB.
+# Clone fresh per machine (see README.md).
+qmk_firmware/
