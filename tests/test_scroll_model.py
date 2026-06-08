@@ -516,3 +516,37 @@ def test_qt_scroll_engine_constructs_without_qt_running():
     from scroll import QtScrollEngine
     eng = QtScrollEngine()
     assert eng.engine.state.phase == Phase.IDLE
+
+
+def test_momentum_decay_reaches_cutoff_in_expected_time():
+    """Released from high velocity, MOMENTUM should decay to IDLE in
+    roughly τ * ln(v0 / cutoff_v) wall-time. The model uses damping in
+    both ACTIVE and MOMENTUM, but ACTIVE→MOMENTUM transition resets
+    last_emit_ms so MOMENTUM decay starts cleanly from there."""
+    eng, posts, clock = _make_engine(now=0)
+    eng.state.phase = Phase.MOMENTUM
+    eng.state.velocity = 2000.0       # well above cutoff
+    eng.state.last_emit_ms = 0
+    eng.state.last_tick_ms = 0
+
+    # Expected wall-time to reach cutoff_v=40:
+    # t = tau * ln(v0/cutoff_v) = 0.400 * ln(2000/40) = 0.400 * 3.912 = 1565 ms
+    import math
+    tau_s = eng.config.tau_ms / 1000.0
+    expected_ms = int(tau_s * math.log(eng.state.velocity / eng.config.cutoff_v) * 1000)
+
+    t = 0
+    while t < 5000 and eng.state.phase != Phase.IDLE:
+        clock[0] = t
+        eng.tick()
+        t += 8
+    actual_ms = t - 8  # last tick before IDLE
+
+    # Allow ±20% tolerance (one tick is 8 ms; the iteration step granularity
+    # plus the gain factor amplifying emit-side accumulator distort the
+    # bare exp() prediction).
+    assert eng.state.phase == Phase.IDLE
+    lo, hi = int(expected_ms * 0.6), int(expected_ms * 1.4)
+    assert lo <= actual_ms <= hi, (
+        f"Decay took {actual_ms} ms; expected ~{expected_ms} ms "
+        f"(tolerance {lo}..{hi})")
