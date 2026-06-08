@@ -5,3 +5,7 @@ ENCODER_MAP_ENABLE = yes
 # and not VIA-runtime-configurable — that is the trade-off for being
 # able to set the wheel tuning constants in config.h.)
 VIA_ENABLE = yes
+
+# MX-Master scroll support
+SRC += inertia.c
+RAW_ENABLE = yes
