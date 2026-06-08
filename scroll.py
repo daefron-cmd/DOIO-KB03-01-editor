@@ -123,10 +123,25 @@ class ScrollEngine:
         dt_s = max(0.0, min((now - self.state.last_emit_ms) / 1000.0, 0.050))
         tau_s = self.config.tau_ms / 1000.0
 
-        # Damped velocity (applied in both ACTIVE and MOMENTUM)
+        # 1. ACTIVE → MOMENTUM / IDLE
+        if (self.state.phase == Phase.ACTIVE
+                and (now - self.state.last_tick_ms) > self.config.active_window_ms):
+            if abs(self.state.velocity) > self.config.coast_threshold:
+                self.enter_momentum(now)
+            else:
+                self.enter_idle(post_ended=True)
+                return
+
+        # 2. Damped velocity
         self.state.velocity *= math.exp(-dt_s / tau_s)
 
-        # Emit
+        # 3. End of momentum
+        if (self.state.phase == Phase.MOMENTUM
+                and abs(self.state.velocity) < self.config.cutoff_v):
+            self.enter_idle_from_momentum()
+            return
+
+        # 4. Emit
         gain = magspeed_gain(abs(self.state.velocity), self.config)
         pixels_f = self.state.velocity * gain * dt_s + self.state.accumulator
         pixels = int(pixels_f)

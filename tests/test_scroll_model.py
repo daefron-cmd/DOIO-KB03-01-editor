@@ -179,3 +179,43 @@ def test_tick_accumulator_carries_fractional_pixels():
     eng.tick()
     assert posts[0][0] == 3
     assert 0.3 < eng.state.accumulator < 0.6
+
+
+def test_active_with_idle_period_transitions_to_momentum_if_fast():
+    eng, posts, clock = _make_engine(now=0)
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = 1000.0  # > coast_threshold (300)
+    eng.state.last_tick_ms = 0
+    eng.state.last_emit_ms = 0
+    clock[0] = 200  # well beyond active_window_ms = 80
+    eng.tick()
+    assert eng.state.phase == Phase.MOMENTUM
+    # transition posts ENDED then MomentumBegan, then the regular emit
+    assert posts[0] == (0, ScrollPhase.ENDED, MomentumPhase.NONE)
+    assert posts[1] == (0, ScrollPhase.NONE, MomentumPhase.BEGAN)
+
+
+def test_active_with_idle_period_goes_to_idle_if_slow():
+    eng, posts, clock = _make_engine(now=0)
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = 100.0  # < coast_threshold (300)
+    eng.state.last_tick_ms = 0
+    eng.state.last_emit_ms = 0
+    clock[0] = 200
+    eng.tick()
+    assert eng.state.phase == Phase.IDLE
+    assert eng.state.velocity == 0.0
+    assert posts == [(0, ScrollPhase.ENDED, MomentumPhase.NONE)]
+
+
+def test_momentum_ends_when_velocity_below_cutoff():
+    eng, posts, clock = _make_engine(now=0)
+    eng.state.phase = Phase.MOMENTUM
+    eng.state.velocity = 30.0  # already below cutoff_v=40
+    eng.state.last_emit_ms = 0
+    eng.state.last_tick_ms = 0
+    clock[0] = 10
+    eng.tick()
+    assert eng.state.phase == Phase.IDLE
+    assert eng.state.velocity == 0.0
+    assert posts == [(0, ScrollPhase.NONE, MomentumPhase.ENDED)]
