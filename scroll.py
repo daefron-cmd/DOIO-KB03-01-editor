@@ -154,14 +154,32 @@ class ScrollEngine:
         self.state.last_emit_ms = now
 
     def on_tick(self, direction: int, device_t_ms: int) -> None:
-        """Called when a SCROLL_PING arrives. direction is +1 or -1."""
         now = self._now()
         signed_impulse = self.config.impulse_per_detent * direction
         if self.config.invert:
             signed_impulse = -signed_impulse
 
+        # Direction-flip kill (only when there's existing velocity to flip
+        # AND the new impulse opposes it)
+        flipped = (
+            self.state.velocity != 0
+            and (self.state.velocity > 0) != (signed_impulse > 0)
+        )
+        if flipped:
+            if self.state.phase == Phase.MOMENTUM:
+                self.enter_idle_from_momentum()
+            else:
+                self.state.velocity = 0.0
+                self.state.accumulator = 0.0
+
         if self.state.phase == Phase.IDLE:
             self.enter_active(now)
+        elif self.state.phase == Phase.MOMENTUM:
+            # Same-direction (non-flip) detent during momentum: end momentum,
+            # reopen ACTIVE with a fresh ScrollPhase.BEGAN.
+            self._post(0, ScrollPhase.NONE, MomentumPhase.ENDED)
+            self.enter_active(now)
+            # enter_active resets accumulator; preserve velocity.
 
         new_v = self.state.velocity + signed_impulse
         if new_v > self.config.v_max:

@@ -249,3 +249,40 @@ def test_on_tick_invert_flips_sign():
     eng.config.invert = True
     eng.on_tick(direction=+1, device_t_ms=0)
     assert eng.state.velocity == -eng.config.impulse_per_detent
+
+
+def test_direction_flip_during_active_zeros_velocity_then_applies_impulse():
+    eng, posts, _ = _make_engine()
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = 500.0
+    eng.state.accumulator = 0.7
+    eng.on_tick(direction=-1, device_t_ms=0)
+    assert eng.state.velocity == -eng.config.impulse_per_detent
+    assert eng.state.accumulator == 0.0
+
+
+def test_direction_flip_during_momentum_posts_one_momentum_ended():
+    eng, posts, _ = _make_engine()
+    eng.state.phase = Phase.MOMENTUM
+    eng.state.velocity = 500.0
+    eng.state.accumulator = 1.5
+    eng.on_tick(direction=-1, device_t_ms=0)
+    # Sequence: MomentumEnded, then ScrollBegan, then impulse applied
+    momentum_ended_count = sum(
+        1 for p in posts if p == (0, ScrollPhase.NONE, MomentumPhase.ENDED))
+    assert momentum_ended_count == 1
+    assert eng.state.phase == Phase.ACTIVE
+    assert eng.state.velocity == -eng.config.impulse_per_detent
+    assert eng.state.accumulator == 0.0
+
+
+def test_same_direction_during_momentum_reopens_active_with_one_momentum_ended():
+    eng, posts, _ = _make_engine()
+    eng.state.phase = Phase.MOMENTUM
+    eng.state.velocity = 500.0
+    eng.on_tick(direction=+1, device_t_ms=0)
+    momentum_ended_count = sum(
+        1 for p in posts if p == (0, ScrollPhase.NONE, MomentumPhase.ENDED))
+    assert momentum_ended_count == 1
+    assert eng.state.phase == Phase.ACTIVE
+    assert eng.state.velocity == 500.0 + eng.config.impulse_per_detent
