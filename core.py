@@ -136,3 +136,62 @@ def set_color(dev, hue: int, sat: int):
 
 def save_lighting(dev):
     return cmd(dev, CUSTOM_SAVE, RGB_MATRIX_CHANNEL)
+
+
+# --- pure frame builders (return payload list) ---
+
+def build_get_key(layer: int, col: int) -> list[int]:
+    return [DYNAMIC_KEYMAP_GET_KEYCODE, layer, 0, col]
+
+
+def build_set_key(layer: int, col: int, keycode: int) -> list[int]:
+    return [DYNAMIC_KEYMAP_SET_KEYCODE, layer, 0, col,
+            (keycode >> 8) & 0xFF, keycode & 0xFF]
+
+
+def build_get_encoder(layer: int, enc: int, direction: int) -> list[int]:
+    return [DYNAMIC_KEYMAP_GET_ENCODER, layer, enc, direction]
+
+
+def build_set_encoder(layer: int, enc: int, direction: int, keycode: int) -> list[int]:
+    return [DYNAMIC_KEYMAP_SET_ENCODER, layer, enc, direction,
+            (keycode >> 8) & 0xFF, keycode & 0xFF]
+
+
+def build_pressed_cols() -> list[int]:
+    return [GET_KEYBOARD_VALUE, SWITCH_MATRIX_STATE, 0x00]
+
+
+def build_layer_count() -> list[int]:
+    return [DYNAMIC_KEYMAP_GET_LAYER_COUNT]
+
+
+def build_light_get(value_id: int) -> list[int]:
+    return [CUSTOM_GET_VALUE, RGB_MATRIX_CHANNEL, value_id]
+
+
+def build_light_set_scalar(value_id: int, value: int) -> list[int]:
+    return [CUSTOM_SET_VALUE, RGB_MATRIX_CHANNEL, value_id, value]
+
+
+def build_light_set_color(hue: int, sat: int) -> list[int]:
+    return [CUSTOM_SET_VALUE, RGB_MATRIX_CHANNEL, LIGHT_COLOR, hue, sat]
+
+
+def build_light_save() -> list[int]:
+    return [CUSTOM_SAVE, RGB_MATRIX_CHANNEL]
+
+
+# --- pure parsers ---
+
+def parse_keycode_reply(reply: list[int]) -> int:
+    return (reply[4] << 8) | reply[5]
+
+
+def parse_pressed_cols_reply(reply: list[int]) -> list[int] | None:
+    if not reply or reply[0] == 0xFF or len(reply) < 4:
+        return None
+    if reply[0] != GET_KEYBOARD_VALUE or reply[1] != SWITCH_MATRIX_STATE:
+        return None
+    row = reply[3]
+    return [col for col in range(N_COLS) if row & (1 << col)]

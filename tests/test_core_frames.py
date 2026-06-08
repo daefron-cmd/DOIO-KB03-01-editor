@@ -58,3 +58,42 @@ def test_pressed_cols_reads_switch_matrix_state():
 def test_pressed_cols_returns_none_when_switch_matrix_state_unhandled():
     dev = FakeHID(replies=[[0xFF] + [0] * 31])
     assert core.pressed_cols(dev) is None
+
+
+def test_build_get_key_payload():
+    p = core.build_get_key(layer=1, col=2)
+    assert p == [core.DYNAMIC_KEYMAP_GET_KEYCODE, 1, 0, 2]
+
+
+def test_build_set_key_payload():
+    p = core.build_set_key(layer=1, col=2, keycode=0x0625)
+    assert p == [core.DYNAMIC_KEYMAP_SET_KEYCODE, 1, 0, 2, 0x06, 0x25]
+
+
+def test_build_get_encoder_payload():
+    p = core.build_get_encoder(layer=0, enc=1, direction=0)
+    assert p == [core.DYNAMIC_KEYMAP_GET_ENCODER, 0, 1, 0]
+
+
+def test_build_set_encoder_payload():
+    p = core.build_set_encoder(layer=0, enc=1, direction=1, keycode=0x00A9)
+    assert p == [core.DYNAMIC_KEYMAP_SET_ENCODER, 0, 1, 1, 0x00, 0xA9]
+
+
+def test_parse_keycode_reply():
+    reply = [core.DYNAMIC_KEYMAP_GET_KEYCODE, 1, 0, 2, 0x06, 0x25] + [0] * 26
+    assert core.parse_keycode_reply(reply) == 0x0625
+
+
+def test_build_pressed_cols_request():
+    p = core.build_pressed_cols()
+    assert p == [core.GET_KEYBOARD_VALUE, core.SWITCH_MATRIX_STATE, 0x00]
+
+
+def test_parse_pressed_cols_reply():
+    reply = [core.GET_KEYBOARD_VALUE, core.SWITCH_MATRIX_STATE, 0x00, 0b10101] + [0]*28
+    assert core.parse_pressed_cols_reply(reply) == [0, 2, 4]
+
+
+def test_parse_pressed_cols_reply_returns_none_on_unhandled():
+    assert core.parse_pressed_cols_reply([0xFF] + [0]*31) is None
