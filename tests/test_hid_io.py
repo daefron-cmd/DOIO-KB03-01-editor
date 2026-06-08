@@ -141,3 +141,138 @@ def test_scroll_ping_direction_zero_means_up():
     dev.queue_reply([0xA1, 0x01, 0x00, 0x00, 0, 0, 0, 0])
     worker.pump_once()
     assert received == [(-1, 0)]
+
+
+def test_read_error_streak_closes_handle_and_fails_pending():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0])
+    worker.pump_writes()
+    # Force read errors
+    def bad_read(*a, **kw):
+        raise OSError("boom")
+    dev.read = bad_read
+    states = []
+    worker.device_state.connect(lambda s: states.append(s))
+    for _ in range(5):
+        worker.pump_once()
+    assert states.count("no-device") >= 1
+    assert worker._dev is None
+    # Pending future failed with TransportClosedError
+    with pytest.raises(TransportClosedError):
+        fut.result(timeout=0.1)
+
+
+def test_write_error_fails_associated_future():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0])
+    dev.close()  # closing makes write raise
+    worker.pump_writes()
+    with pytest.raises(TransportClosedError):
+        fut.result(timeout=0.1)
+
+
+def test_close_handle_fails_all_pending_futures():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    f1 = worker.send_request([0x04, 0])
+    f2 = worker.send_request([0x05, 0])
+    f3 = worker.send_request([0x14, 0])
+    worker._close_handle_internal(reason="test")
+    for f in (f1, f2, f3):
+        with pytest.raises(TransportClosedError):
+            f.result(timeout=0.1)
+
+
+def test_id_unhandled_fails_oldest_global_inflight():
+    """0xFF must fail the OLDEST inflight future regardless of its
+    command id (NOT 'first queue found in a dict iteration')."""
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    first = worker.send_request([0x04, 0])   # cmd 0x04 first
+    second = worker.send_request([0x05, 0])  # cmd 0x05 second
+    worker.pump_writes()
+    dev.queue_reply([0xFF])
+    worker.pump_once()
+    with pytest.raises(IdUnhandledError):
+        first.result(timeout=0.1)
+    assert not second.done()
+
+
+def test_id_unhandled_ordering_with_dict_insertion_race():
+    """Insert a new cmd_id between send and reply; 0xFF must still
+    fail the OLDEST not the new one."""
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    a = worker.send_request([0x04, 0])
+    b = worker.send_request([0x99, 0])  # never-before-seen cmd id
+    worker.pump_writes()
+    dev.queue_reply([0xFF])
+    worker.pump_once()
+    with pytest.raises(IdUnhandledError):
+        a.result(timeout=0.1)
+    assert not b.done()
+
+
+def test_open_with_backoff_does_not_busy_loop():
+    """Backoff schedule: 1 s, 2 s, 5 s."""
+    attempts = []
+    times = [0.0]
+
+    def fake_open():
+        attempts.append(times[0])
+        return None
+
+    worker = HidIoWorker(open_fn=fake_open, now_fn=lambda: times[0])
+    worker.maybe_reopen()
+    assert len(attempts) == 1
+    times[0] = 0.5
+    worker.maybe_reopen()
+    assert len(attempts) == 1
+    times[0] = 1.1
+    worker.maybe_reopen()
+    assert len(attempts) == 2
+    times[0] = 3.2
+    worker.maybe_reopen()
+    assert len(attempts) == 3
+
+
+def test_successful_reopen_emits_device_state_empty():
+    dev = FakeHID()
+    times = [0.0]
+    worker = HidIoWorker(open_fn=lambda: dev, now_fn=lambda: times[0])
+    states = []
+    worker.device_state.connect(lambda s: states.append(s))
+    times[0] = 10.0
+    assert worker.maybe_reopen() is True
+    assert states == [""]
+
+
+def test_cancel_evicts_future_so_late_reply_is_dropped():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0])
+    worker.pump_writes()
+    worker.cancel(fut)
+    # Late reply for cmd 0x04 arrives — there is no future to fulfil.
+    dev.queue_reply([0x04, 0, 0, 0, 0, 0])
+    worker.pump_once()
+    assert fut.cancelled()
+
+
+def test_stale_reply_after_close_is_dropped_silently():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0])
+    worker.pump_writes()
+    worker._close_handle_internal(reason="test")
+    # A reply arriving after close (re-attach a new dev): no crash, no
+    # future to fulfil — the demux must just drop it.
+    new_dev = FakeHID()
+    worker._dev = new_dev
+    new_dev.queue_reply([0x04, 0, 0, 0, 0, 0])
+    worker.pump_once()
+    # fut already failed during close
+    with pytest.raises(TransportClosedError):
+        fut.result(timeout=0.1)

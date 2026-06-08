@@ -237,8 +237,8 @@ class HidIoWorker(QObject):
         with self._lock:
             if self._dev is not None:
                 return False
-        delay = self.BACKOFF_S[min(self._backoff_idx,
-                                   len(self.BACKOFF_S) - 1)]
+        delay = self.BACKOFF_S[max(0, min(self._backoff_idx - 1,
+                                         len(self.BACKOFF_S) - 1))]
         if self._now() - self._last_open_attempt < delay:
             return False
         self._last_open_attempt = self._now()
