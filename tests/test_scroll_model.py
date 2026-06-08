@@ -391,6 +391,65 @@ def test_accumulator_does_not_drift_over_long_run():
     assert px_emitted > 0
 
 
+def test_single_isolated_reverse_detent_is_precise():
+    eng, _, clock = _make_engine(now=0)
+    eng.on_tick(direction=-1, device_t_ms=0)
+    posts = _run_to_idle(eng, clock, start_ms=0)
+    total = sum(p[0] for p in posts)
+    assert eng.state.phase == Phase.IDLE
+    assert abs(total) <= 15, (
+        f"Reverse precision broken: total={total}, posts={posts}")
+
+
+def test_reverse_steady_spin_converges():
+    eng, _, clock = _make_engine(now=0)
+    eng._post = lambda *a: None
+    t = 0
+    last = 0
+    samples = []
+    while t <= 3000:
+        clock[0] = t
+        if t - last >= 30:
+            eng.on_tick(direction=-1, device_t_ms=t)
+            last = t
+        eng.tick()
+        if t > 1000:
+            samples.append(eng.state.velocity)
+        t += 8
+    late = samples[-200:]
+    spread = (max(late) - min(late)) / max(abs(min(late)), 1)
+    assert spread < 0.20, f"Reverse spin unstable: {late[:5]}…{late[-5:]}"
+
+
+def test_direction_flip_negative_to_positive():
+    eng, posts, _ = _make_engine()
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = -500.0
+    eng.on_tick(direction=+1, device_t_ms=0)
+    assert eng.state.velocity == +eng.config.impulse_per_detent
+    assert eng.state.accumulator == 0.0
+
+
+def test_accumulator_does_not_drift_negative():
+    eng, posts, clock = _make_engine(now=0)
+    cfg = eng.config
+    cfg.slow_threshold = 1e9
+    eng.state.phase = Phase.ACTIVE
+    eng.state.velocity = -100.0
+    eng.state.last_emit_ms = 0
+    eng.state.last_tick_ms = 0
+    t = 0
+    last = 0
+    while t < 10000 * 8:
+        clock[0] = t
+        if t - last >= 1:
+            eng.on_tick(direction=-1, device_t_ms=t)
+            last = t
+        eng.tick()
+        t += 8
+    assert -2.0 < eng.state.accumulator < 2.0
+
+
 def test_make_cgevent_post_does_not_crash_on_darwin():
     import sys
     if sys.platform != "darwin":
