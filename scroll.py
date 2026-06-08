@@ -252,3 +252,46 @@ def save_config(cfg: ScrollConfig, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(cfg), indent=2))
+
+
+def make_cgevent_post():
+    """Return a post_scroll(pixels, scroll_phase, momentum_phase) function
+    that posts a real CGEvent. macOS-only. Caller is responsible for
+    having Accessibility permission.
+    """
+    import Quartz  # local import: optional dep, only loaded if needed
+
+    def _post(pixels: int, scroll_phase: int, momentum_phase: int) -> None:
+        ev = Quartz.CGEventCreateScrollWheelEvent2(
+            None,
+            Quartz.kCGScrollEventUnitPixel,
+            1,           # wheelCount
+            pixels, 0, 0)
+        Quartz.CGEventSetIntegerValueField(
+            ev, Quartz.kCGScrollWheelEventScrollPhase, scroll_phase)
+        Quartz.CGEventSetIntegerValueField(
+            ev, Quartz.kCGScrollWheelEventMomentumPhase, momentum_phase)
+        Quartz.CGEventSetIntegerValueField(
+            ev, Quartz.kCGScrollWheelEventIsContinuous, 1)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+
+    return _post
+
+
+def is_accessibility_trusted(prompt: bool = False) -> bool:
+    """Return True iff this process is trusted for Accessibility.
+    If `prompt`, macOS shows the system permission prompt on the first
+    call when not yet trusted.
+    """
+    import sys
+    if sys.platform != "darwin":
+        return False
+    try:
+        import ApplicationServices
+    except ImportError:
+        return False
+    options = {
+        ApplicationServices.kAXTrustedCheckOptionPrompt: prompt
+    }
+    return bool(
+        ApplicationServices.AXIsProcessTrustedWithOptions(options))

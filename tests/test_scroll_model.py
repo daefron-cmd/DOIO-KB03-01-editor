@@ -389,3 +389,65 @@ def test_accumulator_does_not_drift_over_long_run():
     assert -2.0 < eng.state.accumulator < 2.0, (
         f"Accumulator drift: {eng.state.accumulator}")
     assert px_emitted > 0
+
+
+def test_make_cgevent_post_does_not_crash_on_darwin():
+    import sys
+    if sys.platform != "darwin":
+        return
+    from scroll import make_cgevent_post
+    post = make_cgevent_post()
+    # Post a zero-pixel "began" — visible to the OS but harmless.
+    post(0, ScrollPhase.BEGAN, MomentumPhase.NONE)
+    post(0, ScrollPhase.ENDED, MomentumPhase.NONE)
+
+
+def test_scroll_phase_constants_match_coregraphics_on_darwin():
+    """Our ScrollPhase mirror must match CoreGraphics CGScrollPhase.
+    If pyobjc exposes the constants, assert equality. If not, log the
+    runtime values so a manual probe can verify shape."""
+    import sys
+    if sys.platform != "darwin":
+        return
+    import Quartz
+
+    pairs = [
+        ("BEGAN", "kCGScrollPhaseBegan"),
+        ("CHANGED", "kCGScrollPhaseChanged"),
+        ("ENDED", "kCGScrollPhaseEnded"),
+        ("CANCELLED", "kCGScrollPhaseCancelled"),
+        ("MAY_BEGIN", "kCGScrollPhaseMayBegin"),
+    ]
+    for ours, theirs in pairs:
+        if not hasattr(Quartz, theirs):
+            continue  # newer/older pyobjc may not expose all
+        assert getattr(ScrollPhase, ours) == getattr(Quartz, theirs), (
+            f"ScrollPhase.{ours} = {getattr(ScrollPhase, ours)} but "
+            f"Quartz.{theirs} = {getattr(Quartz, theirs)}")
+
+
+def test_momentum_phase_constants_match_coregraphics_on_darwin():
+    import sys
+    if sys.platform != "darwin":
+        return
+    import Quartz
+
+    pairs = [
+        ("BEGAN", "kCGMomentumScrollPhaseBegin"),
+        ("CHANGED", "kCGMomentumScrollPhaseContinue"),
+        ("ENDED", "kCGMomentumScrollPhaseEnd"),
+    ]
+    for ours, theirs in pairs:
+        if not hasattr(Quartz, theirs):
+            continue
+        assert getattr(MomentumPhase, ours) == getattr(Quartz, theirs), (
+            f"MomentumPhase.{ours} mismatch with Quartz.{theirs}")
+
+
+def test_is_accessibility_trusted_returns_bool_on_darwin():
+    import sys
+    if sys.platform != "darwin":
+        return
+    from scroll import is_accessibility_trusted
+    result = is_accessibility_trusted(prompt=False)
+    assert isinstance(result, bool)
