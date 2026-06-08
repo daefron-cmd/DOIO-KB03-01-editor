@@ -119,3 +119,25 @@ def test_id_unhandled_raises_on_request_future():
     worker.pump_once()
     with pytest.raises(IdUnhandledError):
         fut.result(timeout=0.1)
+
+
+def test_scroll_ping_emits_signal_no_future_side_effect():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    received = []
+    worker.scroll_tick.connect(lambda d, t: received.append((d, t)))
+    # 0xA1, version=1, dir=1 (CW=down), flags=0, timestamp=0x04030201
+    dev.queue_reply([0xA1, 0x01, 0x01, 0x00, 0x01, 0x02, 0x03, 0x04])
+    worker.pump_once()
+    assert received == [(+1, 0x04030201)]
+    assert worker.pending_count() == 0
+
+
+def test_scroll_ping_direction_zero_means_up():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    received = []
+    worker.scroll_tick.connect(lambda d, t: received.append((d, t)))
+    dev.queue_reply([0xA1, 0x01, 0x00, 0x00, 0, 0, 0, 0])
+    worker.pump_once()
+    assert received == [(-1, 0)]
