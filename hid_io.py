@@ -134,13 +134,22 @@ class HidIoWorker(QObject):
                 return
             batch = list(self._write_q)
             self._write_q.clear()
-        for frame, fut in batch:
+        for i, (frame, fut) in enumerate(batch):
             try:
                 dev.write(frame)
             except OSError as exc:
                 if fut is not None:
                     fut.set_exception(TransportClosedError(repr(exc)))
                     self._remove_inflight(fut)
+                # Fail ALL subsequent futures in the batch — they will never
+                # be written, so leave them pending would cause them to sit
+                # in _inflight until the caller's 1-second cancel timeout.
+                for _, remaining_fut in batch[i + 1:]:
+                    if remaining_fut is not None:
+                        if not remaining_fut.done():
+                            remaining_fut.set_exception(
+                                TransportClosedError(repr(exc)))
+                        self._remove_inflight(remaining_fut)
                 self._handle_read_error()
                 return
 

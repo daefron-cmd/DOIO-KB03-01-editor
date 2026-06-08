@@ -276,3 +276,32 @@ def test_stale_reply_after_close_is_dropped_silently():
     # fut already failed during close
     with pytest.raises(TransportClosedError):
         fut.result(timeout=0.1)
+
+
+def test_mid_batch_write_error_fails_all_pending_in_batch():
+    """If write fails partway through a batch, all subsequent futures
+    in that batch must also fail — they should not sit pending until
+    the caller's 1-second timeout."""
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    f1 = worker.send_request([0x04, 0])
+    f2 = worker.send_request([0x05, 0])
+    f3 = worker.send_request([0x14, 0])
+    # First write succeeds, second raises, third would-have-succeeded
+    original_write = dev.write
+    state = {"calls": 0}
+    def write_with_failure(data):
+        state["calls"] += 1
+        if state["calls"] == 2:
+            raise OSError("boom mid-batch")
+        return original_write(data)
+    dev.write = write_with_failure
+    worker.pump_writes()
+    # f1 was written; its future is still pending a reply (correct).
+    # f2 failed the write — must be failed.
+    # f3 was in the batch, never written — must ALSO be failed.
+    assert not f1.done() or f1.exception() is None  # written, still pending reply
+    with pytest.raises(TransportClosedError):
+        f2.result(timeout=0.1)
+    with pytest.raises(TransportClosedError):
+        f3.result(timeout=0.1)
