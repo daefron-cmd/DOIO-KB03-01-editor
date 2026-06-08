@@ -256,6 +256,28 @@ class HidIoWorker(QObject):
         return True
 
     @Slot()
+    def run_forever(self) -> None:
+        """Production loop. Run on a QThread.started signal."""
+        self._stop.clear()
+        while not self._stop.is_set():
+            with self._lock:
+                have_dev = self._dev is not None
+            if not have_dev:
+                self.maybe_reopen()
+                with self._lock:
+                    have_dev = self._dev is not None
+                if not have_dev:
+                    # Sleep up to 200 ms or until something is enqueued
+                    # or stop is signalled.
+                    self._wake.wait(timeout=0.2)
+                    self._wake.clear()
+                    continue
+            self.pump_once(timeout_ms=20)
+            # If new writes were enqueued, the wake event lets us drain
+            # them on the next iteration without blocking on read.
+            self._wake.clear()
+
+    @Slot()
     def stop(self) -> None:
         """Stop the IO loop and fail all pending futures with
         TransportClosedError."""
