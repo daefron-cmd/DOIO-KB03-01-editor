@@ -1,7 +1,7 @@
 # DOIO KB03-01 Live Highlight Debug Handoff
 
 **Date:** 2026-06-07  
-**Repo:** `/Users/vegar/Projects/usb-probe`  
+**Repo:** `/Users/vegar/Projects/doio-kb03-01`  
 **User-facing symptom:** the GUI can highlight DOIO controls only when those
 controls are mapped to media/consumer functions. Controls mapped to ordinary
 keyboard keys do not highlight.
@@ -361,12 +361,12 @@ It contains:
 
 - a valid signed arm64 Mach-O launcher
 - `NSInputMonitoringUsageDescription`
-- bundle id `local.usb-probe.kb03`
+- bundle id `local.doio-kb03-01`
 
 The launcher runs:
 
 ```bash
-cd /Users/vegar/projects/usb-probe
+cd /Users/vegar/projects/doio-kb03-01
 /opt/homebrew/bin/uv run python main.py
 ```
 
@@ -391,7 +391,7 @@ So packaging as an app did not solve keyboard HID access.
 Run with the GUI closed:
 
 ```bash
-cd /Users/vegar/Projects/usb-probe
+cd /Users/vegar/Projects/doio-kb03-01
 uv run python scratch_matrix_dump.py
 ```
 

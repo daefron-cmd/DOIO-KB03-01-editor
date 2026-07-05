@@ -1,4 +1,4 @@
-# usb-probe
+# doio-kb03-01
 
 A macOS GUI to inspect and configure the **DOIO KB03-01** macropad (3 keys + a
 dedicated Layers key + 1 push-knob + 2 rotary encoders) over the VIA raw-HID
