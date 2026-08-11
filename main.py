@@ -82,6 +82,10 @@ def main() -> int:
     if window.scroll_panel is not None:
         window.scroll_panel.ax_changed.connect(
             control.on_ax_trusted_changed, Qt.QueuedConnection)
+        control.readiness_changed.connect(
+            window.scroll_panel.on_readiness_changed, Qt.QueuedConnection)
+        io.scroll_tick.connect(
+            window.scroll_panel.on_scroll_tick, Qt.QueuedConnection)
 
     io_thread.start()
     control_thread.start()

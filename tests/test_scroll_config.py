@@ -1,7 +1,4 @@
 import json
-from pathlib import Path
-
-import pytest
 
 from scroll import ScrollConfig, load_config, save_config
 
@@ -20,10 +17,15 @@ def test_load_malformed_file_returns_defaults(tmp_path):
 
 def test_load_partial_file_merges_with_defaults(tmp_path):
     p = tmp_path / "scroll.json"
-    p.write_text(json.dumps({"tau_ms": 800, "invert": True}))
+    p.write_text(json.dumps({
+        "tau_ms": 800,
+        "invert": True,
+        "brake_on_reverse": True,
+    }))
     c = load_config(p)
     assert c.tau_ms == 800
     assert c.invert is True
+    assert c.brake_on_reverse is True
     assert c.impulse_per_detent == ScrollConfig().impulse_per_detent
 
 
@@ -52,7 +54,7 @@ def test_load_rejects_invalid_threshold_ordering(tmp_path):
 
 def test_save_and_reload_roundtrip(tmp_path):
     p = tmp_path / "scroll.json"
-    c = ScrollConfig(tau_ms=600, invert=True)
+    c = ScrollConfig(tau_ms=600, invert=True, brake_on_reverse=True)
     save_config(c, p)
     loaded = load_config(p)
     assert loaded == c

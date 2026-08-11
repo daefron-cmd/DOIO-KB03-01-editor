@@ -1,4 +1,14 @@
-from scroll import Phase, ScrollConfig, ScrollState
+import math
+
+from scroll import (
+    MomentumPhase,
+    Phase,
+    ScrollConfig,
+    ScrollEngine,
+    ScrollPhase,
+    ScrollState,
+    magspeed_gain,
+)
 
 
 def test_scrollstate_defaults():
@@ -24,9 +34,6 @@ def test_scrollconfig_defaults():
     assert c.invert is False
 
 
-from scroll import magspeed_gain
-
-
 def test_gain_below_slow_is_one():
     c = ScrollConfig()
     assert magspeed_gain(0.0, c) == 1.0
@@ -43,9 +50,6 @@ def test_gain_midpoint_is_linear():
     c = ScrollConfig(slow_threshold=200, fast_threshold=1200, max_gain=11)
     mid = (200 + 1200) / 2
     assert magspeed_gain(mid, c) == 6.0  # halfway: 1 + 0.5 * 10
-
-
-from scroll import ScrollEngine, ScrollPhase, MomentumPhase
 
 
 def test_engine_initial_state_is_idle():
@@ -122,9 +126,6 @@ def test_enter_idle_from_momentum_posts_one_momentum_ended():
     assert eng.state.velocity == 0.0
     assert eng.state.accumulator == 0.0
     assert posts == [(0, ScrollPhase.NONE, MomentumPhase.ENDED)]
-
-
-import math
 
 
 def test_tick_in_idle_does_nothing():
@@ -273,6 +274,20 @@ def test_direction_flip_during_momentum_posts_one_momentum_ended():
     assert momentum_ended_count == 1
     assert eng.state.phase == Phase.ACTIVE
     assert eng.state.velocity == -eng.config.impulse_per_detent
+    assert eng.state.accumulator == 0.0
+
+
+def test_brake_on_reverse_during_momentum_stops_without_reverse_impulse():
+    cfg = ScrollConfig(brake_on_reverse=True)
+    eng, posts, _ = _make_engine(config=cfg)
+    eng.state.phase = Phase.MOMENTUM
+    eng.state.velocity = 500.0
+    eng.state.accumulator = 1.5
+    eng.on_tick(direction=-1, device_t_ms=0)
+
+    assert posts == [(0, ScrollPhase.NONE, MomentumPhase.ENDED)]
+    assert eng.state.phase == Phase.IDLE
+    assert eng.state.velocity == 0.0
     assert eng.state.accumulator == 0.0
 
 

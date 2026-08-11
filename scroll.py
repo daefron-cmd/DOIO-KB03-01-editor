@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from pathlib import Path
+from typing import Callable
+
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 
 class Phase(Enum):
@@ -33,6 +37,7 @@ class ScrollConfig:
     cutoff_v: float = 40.0
     v_max: float = 2500.0
     invert: bool = False
+    brake_on_reverse: bool = False
 
 
 @dataclass
@@ -42,9 +47,6 @@ class ScrollState:
     last_tick_ms: int = 0
     last_emit_ms: int = 0
     phase: Phase = Phase.IDLE
-
-
-from typing import Callable
 
 
 class ScrollPhase:
@@ -170,6 +172,8 @@ class ScrollEngine:
         if flipped:
             if self.state.phase == Phase.MOMENTUM:
                 self.enter_idle_from_momentum()
+                if self.config.brake_on_reverse:
+                    return
             else:
                 self.state.velocity = 0.0
                 self.state.accumulator = 0.0
@@ -232,7 +236,7 @@ def load_config(path: Path) -> ScrollConfig:
     for k, v in raw.items():
         if k not in valid:
             continue
-        if k == "invert":
+        if k in {"invert", "brake_on_reverse"}:
             merged[k] = bool(v)
             continue
         if k in _CLAMPS:
@@ -297,10 +301,6 @@ def is_accessibility_trusted(prompt: bool = False) -> bool:
         ApplicationServices.AXIsProcessTrustedWithOptions(options))
 
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
-import time as _time
-
-
 class QtScrollEngine(QObject):
     """Qt wrapper that drives ScrollEngine.tick at 120 Hz via QTimer.
 
@@ -319,7 +319,7 @@ class QtScrollEngine(QObject):
     def __init__(self, config: ScrollConfig | None = None):
         super().__init__()
         self.engine = ScrollEngine(
-            now_fn=lambda: int(_time.monotonic() * 1000),
+            now_fn=lambda: int(time.monotonic() * 1000),
             post_scroll=self._post_scroll_safe,
             config=config,
         )

@@ -4,13 +4,13 @@ model, and the two workers via signals. Never touches a HID handle."""
 from functools import partial
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
     QGridLayout, QGroupBox, QHBoxLayout, QLabel, QGraphicsDropShadowEffect,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QPushButton,
-    QRadioButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QRadioButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 import re
 
@@ -19,6 +19,7 @@ from catalog import CATALOG, render, resolve_controls
 from inferred_layer import InferredLayerState
 from model import LightingState, Snapshot, key_id, enc_id
 from scroll import ScrollConfig, save_config
+from scroll_lab import ScrollLabWindow
 
 ROOT = Path(__file__).resolve().parent
 
@@ -272,6 +273,13 @@ QFrame#inspectorPanel {
     border: 1px solid #d6d0c3;
     border-radius: 8px;
 }
+QScrollArea#inspectorScroll {
+    background: transparent;
+    border: none;
+}
+QScrollArea#inspectorScroll > QWidget > QWidget {
+    background: #fffdf7;
+}
 QFrame#section {
     background: transparent;
     border-top: 1px solid #ddd5c8;
@@ -302,6 +310,22 @@ QLabel#layerStatus {
 QLabel#lightingStatus {
     color: #686257;
     font-size: 12px;
+    font-weight: 700;
+}
+QLabel#scrollStatus {
+    color: #4b4740;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 120%;
+}
+QLabel#scrollSettingLabel {
+    color: #3a362f;
+    font-size: 12px;
+    font-weight: 700;
+}
+QLabel#scrollValue {
+    color: #686257;
+    font-size: 11px;
     font-weight: 700;
 }
 QLabel#colorSwatch {
@@ -693,16 +717,28 @@ class ScrollFeelPanel(QGroupBox):
     def __init__(self, config: ScrollConfig, config_path,
                  scroll_engine, ax_trusted: bool, imports_ok: bool):
         super().__init__("Scroll feel — outer ring")
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._config = config
         self._config_path = config_path
         self._engine = scroll_engine
         self._sliders: dict[str, QSlider] = {}
         self._value_labels: dict[str, QLabel] = {}
+        self._scroll_lab_window: ScrollLabWindow | None = None
+        self._readiness: dict[str, bool] = {
+            "handle_open": False,
+            "imports_ok": imports_ok,
+            "ax_trusted": ax_trusted,
+            "engine_running": False,
+            "ready": False,
+        }
+        self._tick_count = 0
         if self._engine is not None:
             self.config_changed.connect(
                 self._engine.reload_config, Qt.QueuedConnection)
 
         v = QVBoxLayout(self)
+        v.setContentsMargins(10, 18, 10, 10)
+        v.setSpacing(8)
 
         # Status banner
         self._banner = QLabel()
@@ -710,20 +746,39 @@ class ScrollFeelPanel(QGroupBox):
         v.addWidget(self._banner)
         self._update_banner(imports_ok=imports_ok, ax_trusted=ax_trusted)
 
+        self._host_status = QLabel()
+        self._host_status.setObjectName("scrollStatus")
+        self._host_status.setWordWrap(True)
+        v.addWidget(self._host_status)
+        self._refresh_host_status()
+
         # Re-check button
         h = QHBoxLayout()
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
         self._recheck = QPushButton("Re-check Accessibility")
+        self._recheck.setObjectName("secondaryButton")
         self._recheck.clicked.connect(self._on_recheck)
         h.addWidget(self._recheck)
         h.addStretch()
         v.addLayout(h)
+        self._update_recheck_visibility()
 
-        # Sliders
-        for attr, label, lo, hi, step in self.SLIDERS:
-            row = QHBoxLayout()
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 0)
+
+        for row, (attr, label, lo, hi, step) in enumerate(self.SLIDERS):
             lbl = QLabel(label)
-            lbl.setMinimumWidth(120)
+            lbl.setObjectName("scrollSettingLabel")
+            lbl.setMinimumWidth(92)
+            lbl.setMaximumWidth(104)
             slider = QSlider(Qt.Horizontal)
+            slider.setMinimumWidth(118)
             slider.setRange(lo, hi)
             slider.setSingleStep(step)
             slider.setPageStep(step * 10)
@@ -733,22 +788,42 @@ class ScrollFeelPanel(QGroupBox):
             else:
                 slider.setValue(int(current))
             val_lbl = QLabel()
-            val_lbl.setMinimumWidth(80)
+            val_lbl.setObjectName("scrollValue")
+            val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            val_lbl.setMinimumWidth(48)
+            val_lbl.setMaximumWidth(58)
             slider.valueChanged.connect(
                 lambda val, a=attr: self._on_slider_change(a, val))
             self._sliders[attr] = slider
             self._value_labels[attr] = val_lbl
             self._refresh_value_label(attr)
-            row.addWidget(lbl)
-            row.addWidget(slider, 1)
-            row.addWidget(val_lbl)
-            v.addLayout(row)
+            grid.addWidget(lbl, row, 0)
+            grid.addWidget(slider, row, 1)
+            grid.addWidget(val_lbl, row, 2)
+        v.addLayout(grid)
 
         # Invert toggle
         self._invert = QCheckBox("Invert direction")
         self._invert.setChecked(config.invert)
         self._invert.toggled.connect(self._on_invert)
         v.addWidget(self._invert)
+
+        self._brake = QCheckBox("Reverse tick stops coast")
+        self._brake.setChecked(config.brake_on_reverse)
+        self._brake.toggled.connect(self._on_brake)
+        v.addWidget(self._brake)
+
+        test_row = QHBoxLayout()
+        test_row.setContentsMargins(0, 4, 0, 0)
+        test_row.setSpacing(8)
+        self._scroll_lab_button = QPushButton("Open infinite text test")
+        self._scroll_lab_button.setObjectName("scrollLabButton")
+        self._scroll_lab_button.setToolTip(
+            "Open a separate, endless text surface for scroll tuning")
+        self._scroll_lab_button.clicked.connect(self._open_scroll_lab)
+        test_row.addWidget(self._scroll_lab_button)
+        test_row.addStretch()
+        v.addLayout(test_row)
 
     def _refresh_value_label(self, attr: str) -> None:
         v = getattr(self._config, attr)
@@ -757,7 +832,7 @@ class ScrollFeelPanel(QGroupBox):
         elif attr in {"tau_ms", "active_window_ms"}:
             text = f"{int(v)} ms"
         else:
-            text = f"{int(v)} px/s"
+            text = f"{int(v)}"
         self._value_labels[attr].setText(text)
 
     def _on_slider_change(self, attr: str, raw_value: int) -> None:
@@ -783,6 +858,19 @@ class ScrollFeelPanel(QGroupBox):
             self.config_changed.emit(self._config)
         save_config(self._config, self._config_path)
 
+    def _on_brake(self, checked: bool) -> None:
+        self._config.brake_on_reverse = checked
+        if self._engine is not None:
+            self.config_changed.emit(self._config)
+        save_config(self._config, self._config_path)
+
+    def _open_scroll_lab(self) -> None:
+        if self._scroll_lab_window is None:
+            self._scroll_lab_window = ScrollLabWindow(self)
+        self._scroll_lab_window.show()
+        self._scroll_lab_window.raise_()
+        self._scroll_lab_window.activateWindow()
+
     def _on_recheck(self) -> None:
         from scroll import is_accessibility_trusted
         trusted = is_accessibility_trusted(prompt=True)
@@ -793,6 +881,9 @@ class ScrollFeelPanel(QGroupBox):
         self.ax_changed.emit(trusted)
 
     def _update_banner(self, *, imports_ok: bool, ax_trusted: bool) -> None:
+        self._readiness["imports_ok"] = imports_ok
+        self._readiness["ax_trusted"] = ax_trusted
+        self._refresh_host_status()
         if not imports_ok:
             self._banner.setStyleSheet("background: #ffe0e0; padding: 6px;")
             self._banner.setText(
@@ -809,6 +900,48 @@ class ScrollFeelPanel(QGroupBox):
         else:
             self._banner.setStyleSheet("background: #e0ffe0; padding: 6px;")
             self._banner.setText("MX-Master scroll active.")
+        self._update_recheck_visibility()
+
+    def _update_recheck_visibility(self) -> None:
+        if hasattr(self, "_recheck"):
+            self._recheck.setVisible(
+                self._readiness["imports_ok"]
+                and not self._readiness["ax_trusted"])
+
+    @Slot(object)
+    def on_readiness_changed(self, readiness: object) -> None:
+        if isinstance(readiness, dict):
+            for key in self._readiness:
+                if key in readiness:
+                    self._readiness[key] = bool(readiness[key])
+        self._refresh_host_status()
+
+    @Slot(int, int)
+    def on_scroll_tick(self, _direction: int, _device_t_ms: int) -> None:
+        self._tick_count += 1
+        self._refresh_host_status()
+
+    def _refresh_host_status(self) -> None:
+        if not hasattr(self, "_host_status"):
+            return
+        ready = "ready" if self._readiness["ready"] else "waiting"
+        host = (
+            f"Host: {ready}    "
+            f"Raw: {'ok' if self._readiness['handle_open'] else 'no'}    "
+            f"Engine: {'ok' if self._readiness['engine_running'] else 'no'}"
+        )
+        platform = (
+            f"Quartz: {'ok' if self._readiness['imports_ok'] else 'no'}    "
+            f"AX: {'ok' if self._readiness['ax_trusted'] else 'no'}    "
+            f"Ticks: {self._tick_count}"
+        )
+        firmware = (
+            "Firmware: takeover"
+            if self._tick_count > 0
+            else "Firmware: fallback/no pings"
+        )
+        self._host_status.setText(
+            f"{host}\n{platform}\n{firmware}")
 
 
 class MainWindow(QMainWindow):
@@ -871,14 +1004,20 @@ class MainWindow(QMainWindow):
         self._workspace_v.setSpacing(10)
         body.addWidget(self._workspace, stretch=1)
 
+        self._inspector_scroll = QScrollArea()
+        self._inspector_scroll.setObjectName("inspectorScroll")
+        self._inspector_scroll.setWidgetResizable(True)
+        self._inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._inspector_scroll.setMinimumWidth(360)
+        self._inspector_scroll.setMaximumWidth(440)
         self._inspector = QFrame()
         self._inspector.setObjectName("inspectorPanel")
         self._inspector.setMinimumWidth(340)
-        self._inspector.setMaximumWidth(420)
         self._inspector_v = QVBoxLayout(self._inspector)
         self._inspector_v.setContentsMargins(16, 14, 16, 16)
         self._inspector_v.setSpacing(14)
-        body.addWidget(self._inspector)
+        self._inspector_scroll.setWidget(self._inspector)
+        body.addWidget(self._inspector_scroll)
 
         self._build_device_widget()
         self._build_layer_selector()

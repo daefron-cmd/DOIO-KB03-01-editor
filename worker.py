@@ -43,6 +43,7 @@ class ControlWorker(QObject):
     matrix_state = Signal(str)
     matrix_press = Signal(object)
     matrix_release = Signal(object)
+    readiness_changed = Signal(object)
 
     REPLY_TIMEOUT_S = 1.0
     HEARTBEAT_INTERVAL_S = 0.2
@@ -209,6 +210,13 @@ class ControlWorker(QObject):
             self._start_heartbeat()
         elif not is_ready and was_ready:
             self._stop_heartbeat()
+        self.readiness_changed.emit({
+            "handle_open": self._readiness.handle_open,
+            "imports_ok": self._readiness.imports_ok,
+            "ax_trusted": self._readiness.ax_trusted,
+            "engine_running": self._readiness.engine_running,
+            "ready": is_ready,
+        })
 
     # ---- bound adapters: connect signals to THESE, not to lambdas. ----
 
