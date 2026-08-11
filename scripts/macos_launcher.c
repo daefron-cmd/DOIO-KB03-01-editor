@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <libgen.h>
 #include <mach-o/dyld.h>
+#include <Python.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,56 @@ static int read_project_root(const char *exe_path, char *out, size_t out_size) {
     return len > 0 ? 0 : -1;
 }
 
+static int run_python(const char *project_root) {
+    char python_executable[4096];
+    char virtual_env[4096];
+    int n = snprintf(python_executable, sizeof(python_executable),
+                     "%s/.venv/bin/python3", project_root);
+    if (n < 0 || (size_t)n >= sizeof(python_executable)) {
+        fprintf(stderr, "Python executable path is too long\n");
+        return 6;
+    }
+    n = snprintf(virtual_env, sizeof(virtual_env),
+                 "%s/.venv", project_root);
+    if (n < 0 || (size_t)n >= sizeof(virtual_env)) {
+        fprintf(stderr, "Virtual environment path is too long\n");
+        return 6;
+    }
+    if (access(python_executable, X_OK) != 0) {
+        fprintf(stderr, "%s is not executable: %s\n",
+                python_executable, strerror(errno));
+        return 6;
+    }
+
+    setenv("VIRTUAL_ENV", virtual_env, 1);
+
+    PyConfig config;
+    PyConfig_InitPythonConfig(&config);
+    config.parse_argv = 1;
+
+    PyStatus status = PyConfig_SetBytesString(
+        &config, &config.program_name, python_executable);
+    if (!PyStatus_Exception(status)) {
+        char *python_argv[] = {python_executable, "main.py"};
+        status = PyConfig_SetBytesArgv(&config, 2, python_argv);
+    }
+    if (!PyStatus_Exception(status)) {
+        status = PyConfig_SetBytesString(
+            &config, &config.run_filename, "main.py");
+    }
+    if (!PyStatus_Exception(status)) {
+        status = Py_InitializeFromConfig(&config);
+    }
+    PyConfig_Clear(&config);
+
+    if (PyStatus_Exception(status)) {
+        fprintf(stderr, "Python initialization failed: %s\n",
+                status.err_msg ? status.err_msg : "unknown error");
+        return PyStatus_IsExit(status) ? status.exitcode : 6;
+    }
+    return Py_RunMain();
+}
+
 int main(void) {
     char exe_path[4096];
     uint32_t size = sizeof(exe_path);
@@ -54,13 +105,10 @@ int main(void) {
     }
 
     printf("=== launching DOIO KB03-01 from %s ===\n", project_root);
-    setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", 1);
     if (chdir(project_root) != 0) {
         fprintf(stderr, "chdir failed: %s\n", strerror(errno));
         return 4;
     }
 
-    execlp("uv", "uv", "run", "python", "main.py", NULL);
-    fprintf(stderr, "exec uv failed: %s\n", strerror(errno));
-    return 5;
+    return run_python(project_root);
 }
