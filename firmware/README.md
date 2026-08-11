@@ -13,9 +13,11 @@ the binaries we actually flashed onto this unit.
 | Path | What it is |
 |---|---|
 | `keymaps/vegar/` | Custom keymap source — `config.h` (mousekey wheel tuning), `keymap.c` (4-layer layout with mouse / media / lights layers), `rules.mk` (encoder map + VIA on). |
-| `dumps/candidate_doio_kb03_vegar.{bin,hex}` | Last image built from `keymaps/vegar/` and flashed onto the unit. |
+| `dumps/doio_kb03_vegar_scroll_20260810.{bin,hex}` | Current verified build from `keymaps/vegar/`, flashed on 2026-08-10; reserves the outer ring for host scroll on all four layers and resets stale VIA encoder mappings at boot. |
+| `dumps/candidate_doio_kb03_vegar.{bin,hex}` | Historical image from before the all-layer scroll implementation; retained for provenance, not for the MX Master host-scroll setup. |
 | `dumps/rescue_doio_kb03_default.{bin,hex}` | Stock `doio/kb03:default` build. Flash this to roll back. |
 | `dumps/keymap_dump_initial.txt` | Pre-customization output of `scripts/keymap_dump.py` — matrix shape + per-layer keycodes as the unit shipped. Reference snapshot. |
+| `dumps/SHA256SUMS` | SHA-256 checksums for every tracked reference dump and flash image. |
 | `build.sh` | Convenience wrapper around `make doio/kb03:<keymap>`. |
 | `qmk_firmware/` | Full QMK checkout. Gitignored. See setup below. |
 
@@ -56,6 +58,12 @@ deliberately) or by shorting the on-PCB reset pads.
 # With the device in DFU:
 qmk flash -kb doio/kb03 -km vegar
 # or, equivalently, point dfu-util at one of the .bin files in dumps/.
+```
+
+Before flashing a prebuilt image, verify it from the repository root:
+
+```bash
+(cd firmware/dumps && shasum -a 256 -c SHA256SUMS)
 ```
 
 ## Caveats

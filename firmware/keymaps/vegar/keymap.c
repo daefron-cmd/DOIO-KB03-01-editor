@@ -4,8 +4,10 @@
 //
 // Outer-ring (encoder index 1) MX-Master scroll emulation. The outer
 // ring fires custom keycodes OUTER_SCROLL_CCW/CW. process_record_user
-// routes them either to a raw_hid SCROLL_PING when the host is ready,
-// or falls back to a direct HID wheel report.
+// emits a SCROLL_PING (0xA1) on the raw_hid endpoint when the host daemon
+// (main.py + ScrollEngine) has sent a fresh HOST_SCROLL_READY heartbeat.
+// Otherwise it falls back to plain vertical QMK mouse-wheel events so the
+// outer ring remains usable with the GUI closed or Accessibility denied.
 //
 // See docs/superpowers/specs/2026-06-08-outer-encoder-mx-scroll-design.md
 
@@ -56,8 +58,8 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 #ifdef ENCODER_MAP_ENABLE
 const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
-    // Inner knob (index 0): per-layer bindings as before.
-    // Outer ring (index 1): custom keycodes on every layer.
+    // Inner knob (index 0): per-layer bindings, untouched by this project.
+    // Outer ring (index 1): always OUTER_SCROLL_CCW/CW — host daemon owns it.
     [_BASE]   = { ENCODER_CCW_CW(MS_WHLU, MS_WHLD),
                   ENCODER_CCW_CW(OUTER_SCROLL_CCW, OUTER_SCROLL_CW) },
     [_MOUSE]  = { ENCODER_CCW_CW(MS_LEFT, MS_RGHT),
@@ -78,9 +80,6 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
                 if (inertia_is_host_ready()) {
                     inertia_send_scroll_ping(cw);
                 } else {
-                    // Avoid mousekey/tap_code dispatch here. Modern QMK can
-                    // defer mousekey sends until after tap release, which
-                    // collapses the wheel impulse to a zero-delta report.
                     send_wheel_report(cw);
                 }
             }
@@ -90,7 +89,7 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 }
 
 bool via_command_kb(uint8_t *data, uint8_t length) {
-    if (length > 0 && data[0] == 0xA0) {  // HOST_SCROLL_READY
+    if (length > 0 && data[0] == 0xA0) {  // HOST_SCROLL_READY heartbeat
         inertia_host_ready();
         return true;
     }
@@ -103,17 +102,13 @@ void housekeeping_task_user(void) {
 
 void keyboard_post_init_user(void) {
 #ifdef ENCODER_MAP_ENABLE
-    // POLICY: the outer ring (encoder index 1) is reserved for host
-    // scroll takeover. VIA may have stored stale outer-ring bindings
-    // in EEPROM from a previous firmware. Force-overwrite them on
-    // every boot. dynamic_keymap_set_encoder() uses update semantics,
-    // so identical writes are cheap and idempotent.
-    //
-    // Side-effect (intentional): any VIA remap of the outer ring is
-    // silently overwritten on next boot.
-    for (uint8_t ly = 0; ly < 4; ly++) {
-        dynamic_keymap_set_encoder(ly, 1, 0, OUTER_SCROLL_CCW);
-        dynamic_keymap_set_encoder(ly, 1, 1, OUTER_SCROLL_CW);
-    }
+    // Force EEPROM dynamic-keymap to match the compile-time keymaps[]
+    // and encoder_map[] on every boot. Required because VIA_ENABLE +
+    // ENCODER_MAP_ENABLE persists encoder bindings in EEPROM and
+    // continues using stale values across reflashes — without this,
+    // edits to encoder_map[] in this file never take effect at runtime.
+    // Side-effect (consistent with the "outer ring is reserved" policy):
+    // any VIA remap is silently reverted on next boot.
+    dynamic_keymap_reset();
 #endif
 }

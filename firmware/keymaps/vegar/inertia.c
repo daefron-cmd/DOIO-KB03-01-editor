@@ -9,6 +9,7 @@
 #include "quantum.h"
 
 #define HOST_READY_WINDOW_MS 500
+#define RAW_HID_REPORT_SIZE 32
 
 static bool     s_host_ready          = false;
 static uint32_t s_last_host_ready_ms  = 0;
@@ -30,7 +31,7 @@ bool inertia_is_host_ready(void) {
 }
 
 void inertia_send_scroll_ping(bool cw) {
-    uint8_t f[RAW_EPSIZE] = {0};
+    uint8_t f[RAW_HID_REPORT_SIZE] = {0};
     uint32_t t = timer_read32();
 
     f[0] = 0xA1;            // SCROLL_PING
@@ -42,5 +43,5 @@ void inertia_send_scroll_ping(bool cw) {
     f[6] = (uint8_t)(t >> 16);
     f[7] = (uint8_t)(t >> 24);
 
-    raw_hid_send(f, RAW_EPSIZE);
+    raw_hid_send(f, RAW_HID_REPORT_SIZE);
 }
