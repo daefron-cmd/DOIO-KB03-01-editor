@@ -254,7 +254,14 @@ class HidIoWorker(QObject):
         if self._now() - self._last_open_attempt < delay:
             return False
         self._last_open_attempt = self._now()
-        dev = self._open_fn()
+        try:
+            dev = self._open_fn()
+        except OSError:
+            # A temporarily busy or unavailable HID interface is a normal
+            # reconnect condition. Keep the worker loop alive so the next
+            # backoff slot can acquire it.
+            self._backoff_idx += 1
+            return False
         if dev is None:
             self._backoff_idx += 1
             return False

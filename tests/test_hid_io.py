@@ -1,5 +1,3 @@
-import threading
-
 import pytest
 
 from hid_io import (
@@ -276,6 +274,26 @@ def test_successful_reopen_emits_device_state_empty():
     times[0] = 10.0
     assert worker.maybe_reopen() is True
     assert states == [""]
+
+
+def test_open_error_is_retried_instead_of_escaping_worker_loop():
+    dev = FakeHID()
+    times = [0.0]
+    attempts = [0]
+
+    def flaky_open():
+        attempts[0] += 1
+        if attempts[0] == 1:
+            raise OSError("temporarily unavailable")
+        return dev
+
+    worker = HidIoWorker(open_fn=flaky_open, now_fn=lambda: times[0])
+
+    assert worker.maybe_reopen() is False
+    assert worker._dev is None
+    times[0] = 1.1
+    assert worker.maybe_reopen() is True
+    assert worker._dev is dev
 
 
 def test_cancel_evicts_future_so_late_reply_is_dropped():
