@@ -1,10 +1,14 @@
 # DOIO KB03-01 Live Highlight Debug Handoff
 
 **Date:** 2026-06-07  
-**Repo:** `/Users/vegar/Projects/doio-kb03-01`  
+**Repo:** this repository
 **User-facing symptom:** the GUI can highlight DOIO controls only when those
 controls are mapped to media/consumer functions. Controls mapped to ordinary
 keyboard keys do not highlight.
+
+> This is a historical investigation record. The `scratch_*` scripts mentioned
+> in some captured steps were disposable diagnostics and were not retained.
+> Use `scripts/matrix_state.py` for the maintained VIA matrix-state probe.
 
 ## Current Status
 
@@ -30,7 +34,7 @@ wrong byte. That has now been patched; see "VIA Matrix Fallback Parse Fix" below
 - `listener.py` opens keyboard/consumer HID interfaces for live input reports.
 - `ui.py` displays the GUI and flashes controls.
 - `scratch_keyboard_dump.py` dumps raw keyboard-interface HID reports.
-- `scratch_matrix_dump.py` dumps VIA `switch_matrix_state` physical key state.
+- `scripts/matrix_state.py` dumps VIA `switch_matrix_state` physical key state.
 - `scripts/build_app_bundle.sh` builds a macOS `.app` wrapper.
 - `scripts/macos_launcher.c` is the native launcher used by the `.app`.
 
@@ -268,7 +272,8 @@ Possible explanations:
 - The polling interferes with other raw-HID commands.
 - The fallback is flashing the wrong control or style reset hides it quickly.
 
-`scratch_matrix_dump.py` was added to investigate this directly.
+The predecessor of `scripts/matrix_state.py` was added to investigate this
+directly.
 
 ### 5. VIA Matrix Fallback Parse Fix
 
@@ -303,7 +308,7 @@ Tests now assert this exact request/reply shape in
 Captured with:
 
 ```bash
-uv run python scratch_matrix_dump.py
+uv run python scripts/matrix_state.py
 ```
 
 while pressing the DOIO layer/change button:
@@ -363,10 +368,10 @@ It contains:
 - `NSInputMonitoringUsageDescription`
 - bundle id `local.doio-kb03-01`
 
-The launcher runs:
+The original launcher attempt ran:
 
 ```bash
-cd /Users/vegar/projects/doio-kb03-01
+cd /path/to/doio-kb03-01
 /opt/homebrew/bin/uv run python main.py
 ```
 
@@ -388,11 +393,11 @@ So packaging as an app did not solve keyboard HID access.
 
 ### 1. Confirm VIA Matrix Report Shape
 
-Run with the GUI closed:
+Run the maintained read-only probe with the GUI closed:
 
 ```bash
-cd /Users/vegar/Projects/doio-kb03-01
-uv run python scratch_matrix_dump.py
+cd /path/to/doio-kb03-01
+uv run python scripts/keymap_dump.py --rows 1 --cols 5
 ```
 
 Press each physical key, including:
@@ -525,7 +530,7 @@ uv run python scratch_keyboard_dump.py
 VIA matrix diagnostic:
 
 ```bash
-uv run python scratch_matrix_dump.py
+uv run python scripts/matrix_state.py
 ```
 
 Rebuild app wrapper:

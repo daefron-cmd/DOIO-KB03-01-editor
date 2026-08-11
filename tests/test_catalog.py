@@ -1,7 +1,20 @@
 from catalog import (
-    KEYCODES, decode, mod, layer,
-    SHIFT, ALT, MO,
-    KC_8, KC_9,
+    ALT,
+    CATALOG,
+    CONSUMER_USAGE,
+    KC_8,
+    KC_LBRC,
+    KC_QUOTE,
+    KC_SCLN,
+    KEYCODES,
+    MO,
+    SHIFT,
+    _BASE_CATALOG,
+    _apply_layout,
+    decode,
+    layer,
+    mod,
+    render,
 )
 
 
@@ -26,13 +39,6 @@ def test_decode_roundtrips_modded_value():
     assert decode(mod(KC_8, ALT, right=True)) == "R⌥+KC_8"
     assert decode(layer(MO, 1)) == "MO(1)"
     assert decode(0x002F) == "KC_LBRC"
-
-
-from catalog import (
-    CATALOG, render, reverse_index,
-    _BASE_CATALOG, _apply_layout, LAYOUTS, ACTIVE_LAYOUT,
-    KC_LBRC, KC_SCLN, KC_QUOTE,
-)
 
 
 def test_catalog_keycodes_are_unique():
@@ -91,9 +97,6 @@ def test_mouse_wheel_keycodes_present():
     assert KEYCODES[0x00DC] == "KC_MS_WH_RIGHT"
     mouse = {code for cat, _, code in CATALOG if cat == "mouse"}
     assert {0x00D9, 0x00DA, 0x00DB, 0x00DC} <= mouse
-
-
-from catalog import CONSUMER_USAGE
 
 
 def test_consumer_usage_bridges_to_qmk_keycodes():

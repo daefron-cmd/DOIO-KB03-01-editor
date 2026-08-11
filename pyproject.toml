@@ -1,20 +1,54 @@
 [project]
 name = "doio-kb03-01"
 version = "0.1.0"
-description = "Add your description here"
+description = "macOS control center and custom QMK firmware for the DOIO KB03-01 macropad"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "GPL-2.0-or-later"
+license-files = ["LICENSE"]
+keywords = ["doio", "hid", "macropad", "qmk", "via"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+]
 dependencies = [
     "hidapi>=0.15.0",
     "libusb-package>=1.0.26.3",
     "pyusb>=1.3.1",
     "PySide6>=6.8",
-    "pyobjc-framework-Quartz>=12",
-    "pyobjc-framework-ApplicationServices>=12",
+    "pyobjc-framework-Quartz>=12; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=12; sys_platform == 'darwin'",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.5.0",
+    "ruff>=0.12",
 ]
+package = [
+    "pyinstaller>=6.21,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/daefron-cmd/DOIO-KB03-01-editor"
+Issues = "https://github.com/daefron-cmd/DOIO-KB03-01-editor/issues"
+Repository = "https://github.com/daefron-cmd/DOIO-KB03-01-editor.git"
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+# Keep CI focused on correctness and unused imports. Broader style rules can be
+# adopted deliberately without making a Ruff upgrade rewrite the whole project.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# These standalone scripts add the repository root to sys.path before importing
+# local modules, so their imports intentionally follow the bootstrap code.
+"scripts/keymap_dump.py" = ["E402"]
+"scripts/matrix_state.py" = ["E402"]
+"scripts/probe_led_effects.py" = ["E402"]

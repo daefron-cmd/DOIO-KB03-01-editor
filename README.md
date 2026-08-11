@@ -1,14 +1,56 @@
-# doio-kb03-01
+# DOIO KB03-01 Control Center
 
-A macOS GUI to inspect and configure the **DOIO KB03-01** macropad (3 keys + a
-dedicated Layers key + 1 push-knob + 2 rotary encoders) over the VIA raw-HID
-interface, plus a small set of standalone probes for poking at the device's USB
-and HID layers.
+A macOS companion app and optional custom QMK firmware for the wonderfully
+over-specific **DOIO KB03-01** macropad: three keys, a layer button, a push-knob,
+and two rotary encoders.
 
-The repo started as a one-off `probe.py` to identify the hardware and grew into
-a PySide6 app for remapping keys, binding encoder directions, driving the RGB
-matrix lighting, and live-highlighting which physical control just emitted a
-report.
+The app turns the pad's VIA raw-HID interface into a visual control center. It
+can inspect and remap the four-layer keymap, configure RGB matrix lighting,
+identify controls as you use them, and give the outer ring MX Master-style
+accelerated scrolling when paired with the included firmware.
+
+> [!IMPORTANT]
+> This is an independent enthusiast project, not an official DOIO utility. It
+> targets one specific hardware revision; confirm the VID/PID below before
+> using the app or flashing firmware.
+
+## Download
+
+Tagged releases attach a self-contained Apple-silicon macOS app and its SHA-256
+checksum on the [GitHub Releases](https://github.com/daefron-cmd/DOIO-KB03-01-editor/releases)
+page. Download the `arm64.zip`, extract it, and move `DOIO KB03-01.app` to
+Applications. No Python installation or source checkout is required.
+
+The automated beta build is ad-hoc signed, not Apple-notarized. Gatekeeper may
+therefore require you to approve the app explicitly in System Settings →
+Privacy & Security after the first launch attempt. A Developer ID-signed and
+notarized release can replace it later without changing the bundle format.
+
+Verify a download from the directory containing both release files:
+
+```bash
+shasum -a 256 -c DOIO-KB03-01-v0.1.0-macOS-arm64.zip.sha256
+```
+
+## Run from source
+
+You need macOS 13 or newer, Python 3.13, [`uv`](https://docs.astral.sh/uv/), and
+a current-revision KB03-01 connected over USB.
+
+```bash
+uv sync --frozen
+uv run python main.py
+```
+
+If `uv` is not installed yet, follow its
+[official installation guide](https://docs.astral.sh/uv/getting-started/installation/).
+The required Python version is recorded in `.python-version`; `uv` can install
+it automatically. Runtime dependencies are locked in `uv.lock`.
+
+The GUI works with the device's regular VIA firmware. Flashing the custom
+firmware is optional and is only needed for the host-assisted outer-ring scroll
+behavior. On first launch, macOS may ask for Input Monitoring and Accessibility
+permissions; the app explains what remains available if either is denied.
 
 ## Target device
 
@@ -39,6 +81,9 @@ supported. See `docs/KB03_layer_state_handoff.md` for revision details.
 - Tracks the active layer host-side from physical matrix presses and the
   layer-switching keycodes in the keymap, since VIA exposes no command for the
   active layer index.
+- Opens a non-modal infinite-text Scroll Lab from the Scroll Feel panel, with
+  numbered virtual rows and a fixed calibration marker for comparing precision,
+  acceleration, coast, and reverse braking while tuning the outer ring.
 
 ## Layout
 
@@ -51,6 +96,7 @@ supported. See `docs/KB03_layer_state_handoff.md` for revision details.
 | `worker.py` | `ControlWorker` — owns the VIA handle, runs `core` calls on its own thread, polls `switch_matrix_state` at ~33 Hz. |
 | `inferred_layer.py` | Host-side layer model. Interprets `TO/MO/TG/DF` keycodes against physical matrix events. |
 | `ui.py` | PySide6 `MainWindow`, `DevicePanel` (device photo + overlays + leader lines), the RGB panel, and the photo-calibrated LED swatch helper. |
+| `scroll_lab.py` | Virtual infinite-text calibration window for tuning the outer-ring scroll model. |
 | `main.py` | Wires the two workers onto their `QThread`s and shows the window. |
 | `probe.py` | Standalone HID + libusb descriptor dump. Run this first against an unknown device. |
 
@@ -63,15 +109,7 @@ Threads:
 - **Listener thread** — `Listener`. Owns the keyboard + consumer handles, decodes
   reports, emits `input_event`.
 
-## Run it
-
-```bash
-uv sync
-uv run python main.py
-```
-
-Requires Python 3.13 (`.python-version`). Dependencies are listed in
-`pyproject.toml`: `hidapi`, `libusb-package`, `pyusb`, `PySide6`.
+## macOS permissions
 
 On first run macOS will prompt for **Input Monitoring** permission for the
 keyboard HID interface. Without it, key highlights still work because the VIA
@@ -105,6 +143,16 @@ non-empty cells gives you the matrix shape on a device whose layout isn't
 hardcoded into `core.py`. **Close the GUI before running it** — same
 single-owner caveat as the LED probe.
 
+### Watching physical matrix presses
+
+```bash
+uv run python scripts/matrix_state.py
+```
+
+Prints the currently pressed matrix columns whenever they change. This is the
+smallest diagnostic for live-highlight or layer-button problems. Close the GUI
+first because this probe also owns the VIA raw-HID interface.
+
 ### Verifying lighting effects
 
 `scripts/probe_led_effects.py` walks effect indices 0..31, asks you what each
@@ -116,7 +164,7 @@ the VIA raw-HID interface is strictly single-owner (see Caveats).
 uv run python scripts/probe_led_effects.py --max-index 31
 ```
 
-## Custom firmware
+## Custom firmware (optional)
 
 The host app reaches everything VIA exposes at runtime. Things baked at compile
 time — `MOUSEKEY_WHEEL_*` constants, encoder maps when `ENCODER_MAP_ENABLE` is
@@ -129,33 +177,76 @@ on, anything below the VIA layer — live in `firmware/`:
 - `firmware/build.sh` — wraps `make doio/kb03:<keymap>`. Symlinks
   `firmware/keymaps/*/` into a sibling QMK checkout on first build.
 
-See `firmware/README.md` for the one-time QMK setup and the flash flow. The
-QMK tree itself is gitignored — clone it per machine.
+See [`firmware/README.md`](firmware/README.md) for the one-time QMK setup,
+firmware checksums, and flash flow. The QMK tree itself is gitignored — clone it
+per machine. Flashing the wrong image can leave the macropad temporarily
+unusable, so verify the USB identity and keep the rescue image available.
 
-## Build a macOS `.app`
+## Build a local macOS `.app`
 
 ```bash
 ./scripts/build_app_bundle.sh           # writes dist/DOIO KB03-01.app
 ./scripts/build_app_bundle.sh --install # also copies to /Applications
 ```
 
-The bundle is a thin native launcher (`scripts/macos_launcher.c`) that records
-the project path at build time, `chdir`s back to it, and execs
-`uv run python main.py`. Output goes to `/tmp/doio-kb03-app.log`. The icon is
-generated from `pictures/icon.png` via `scripts/png_to_icns.py`. Ad-hoc signed
-with `codesign -`.
+This is a local convenience bundle, not a redistributable release build: the
+native launcher (`scripts/macos_launcher.c`) records the checkout path and uses
+that checkout's virtual environment. Keeping the bundle executable alive is
+required for macOS Accessibility permission to bind to `DOIO KB03-01.app`.
+Output goes to `/tmp/doio-kb03-app.log`; the bundle is ad-hoc signed with
+`codesign -`.
+
+## Build a distributable macOS app
+
+```bash
+uv sync --frozen --group package
+./scripts/build_release.sh
+```
+
+This creates a self-contained, relocatable app plus a ZIP and SHA-256 file in
+`dist/releases/`. The archive name includes the version from `version.py` and
+the build machine's architecture. The builder verifies the embedded version,
+property list, code signature, archive integrity, and bundled dependency
+notices before returning success.
+
+Pushing a matching semantic-version tag such as `v0.1.0` runs the release
+workflow and creates a GitHub prerelease with the ZIP and checksum attached.
+The tag must match both `version.py` and `pyproject.toml`.
+
+For a Gatekeeper-friendly public release, set `MACOS_CODESIGN_IDENTITY` to a
+Developer ID Application identity while building. Submit the ZIP with Apple's
+`notarytool`; after acceptance, staple the ticket to the `.app`, then recreate
+the ZIP and checksum before publishing. Apple Developer Program credentials are
+not stored in this repository, so the automated workflow currently produces an
+ad-hoc-signed beta.
 
 ## Tests
 
 ```bash
-uv run pytest
+uv run --frozen ruff check .
+uv run --frozen pytest
+bash -n scripts/build_app_bundle.sh firmware/build.sh
 ```
 
-All tests are pure-logic (no hardware). They cover keycode decode, the
+The automated suite is hardware-free. It covers keycode decode, the
 Norwegian-Mac catalog table, report decoding for both interfaces,
 `resolve_controls` (including the QMK 5-bit right-mod fold edge case), the
 inferred layer state machine, VIA frame shapes, and the photo-calibrated LED
-swatch.
+swatch. Pull requests run these checks on macOS in GitHub Actions.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the small-project contribution
+workflow and the details that make hardware reports actionable.
+
+## Versioning and license
+
+The first public release is `0.1.0`: functional and useful on the confirmed
+hardware, with compatibility and packaging still allowed to evolve. Releases
+use semantic version tags such as `v0.1.0`.
+
+This project is licensed under
+[GNU GPL version 2 or later](LICENSE). Third-party components included in the
+prebuilt app retain their own licenses; see
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Caveats
 

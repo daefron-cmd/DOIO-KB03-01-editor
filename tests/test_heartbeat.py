@@ -7,14 +7,11 @@
     blocking dependency on the inflight VIA request).
 """
 
-import threading
 import time
 
-from PySide6.QtCore import QCoreApplication, Q_ARG, Qt, QThread, QTimer
-import pytest
+from PySide6.QtCore import QCoreApplication, Q_ARG, QMetaObject, Qt, QThread
 
-import hid_io
-from worker import ControlWorker, Readiness
+from worker import ControlWorker
 
 
 class StallingIo:
@@ -59,7 +56,6 @@ def test_update_readiness_runs_on_owning_thread(qtbot):
     thread.start()
     # Fire readiness transitions via QMetaObject so they run on the
     # owning thread.
-    from PySide6.QtCore import QMetaObject
     for gate in ("imports_ok", "ax_trusted", "engine_running", "handle_open"):
         QMetaObject.invokeMethod(
             control, "update_readiness", Qt.QueuedConnection,
@@ -85,7 +81,6 @@ def test_heartbeat_continues_during_blocking_via_request(qtbot):
     thread = QThread()
     control.moveToThread(thread)
     thread.start()
-    from PySide6.QtCore import QMetaObject
     for gate in ("imports_ok", "ax_trusted", "engine_running", "handle_open"):
         QMetaObject.invokeMethod(
             control, "update_readiness", Qt.QueuedConnection,
@@ -110,7 +105,6 @@ def test_heartbeat_continues_while_control_request_is_blocked(qtbot):
     thread = QThread()
     control.moveToThread(thread)
     thread.start()
-    from PySide6.QtCore import QMetaObject
     for gate in ("imports_ok", "ax_trusted", "engine_running", "handle_open"):
         QMetaObject.invokeMethod(
             control, "update_readiness", Qt.QueuedConnection,

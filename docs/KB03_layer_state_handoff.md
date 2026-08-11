@@ -45,8 +45,8 @@ templates). DOIO moved the kb16 from 32U4 (rev1) to APM32F103CBT6 (rev2) during 
 
 ### Vendor download files
 
-The vendor-provided `/Users/vegar/Downloads/kb03-01.json` is a VIA definition for
-the older public identity:
+The vendor-provided `kb03-01.json` (not redistributed here) is a VIA definition
+for the older public identity:
 
 - name: `DOIO`
 - VID/PID: `0xFEED/0x6060`
@@ -58,8 +58,8 @@ the older public identity:
 That file explains the old public VIA layout, but it does not match this unit's
 live USB identity or observed RGB-matrix channel behavior.
 
-The vendor-provided `/Users/vegar/Downloads/kb09-01.bin` is an ARM firmware image
-despite the `kb09` filename. Embedded strings identify it as QMK-builder firmware
+The vendor-provided `kb09-01.bin` (not redistributed here) is an ARM firmware
+image despite the `kb09` filename. Embedded strings identify it as QMK-builder firmware
 with `VID: 0xFEED(qmkbuilder) PID: 0x6060(DOIO)`, build date `Sep 24 2022`, and
 QMK RGB Matrix strings including `rgb_matrix_config.mode`,
 `rgb_matrix_config.hsv.h`, `rgb_matrix_config.hsv.s`, `rgb_matrix_config.hsv.v`,

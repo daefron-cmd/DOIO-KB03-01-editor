@@ -8,13 +8,39 @@ from hid_io import HidIoWorker
 from listener import Listener
 from scroll import QtScrollEngine, is_accessibility_trusted, load_config
 from ui import MainWindow
+from version import APP_VERSION
 from worker import ControlWorker
 
 
 CONFIG_PATH = Path.home() / ".config" / "doio-kb03" / "scroll.json"
 
 
+def _self_test() -> int:
+    """Verify dependencies and runtime artwork without opening the GUI."""
+    try:
+        import ApplicationServices  # noqa: F401
+        import Quartz  # noqa: F401
+        import hid  # noqa: F401
+    except ImportError as exc:
+        print(f"self-test failed: {exc}", file=sys.stderr)
+        return 1
+
+    background = Path(__file__).resolve().parent / "pictures" / "gui_background.png"
+    if not background.is_file():
+        print(f"self-test failed: missing {background}", file=sys.stderr)
+        return 1
+
+    print(f"DOIO KB03-01 {APP_VERSION} self-test passed")
+    return 0
+
+
 def main() -> int:
+    if "--version" in sys.argv[1:]:
+        print(f"DOIO KB03-01 {APP_VERSION}")
+        return 0
+    if "--self-test" in sys.argv[1:]:
+        return _self_test()
+
     app = QApplication(sys.argv)
 
     # Probe optional deps. Failure here drops the imports_ok gate.
