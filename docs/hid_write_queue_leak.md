@@ -1,8 +1,16 @@
 # HID write-queue leak — findings + fix plan
 
 **Date:** 2026-07-06
-**Status:** root cause confirmed, fix NOT yet implemented
+**Status (2026-09-18):** fixed in source; hardware reconnect verification pending.
 **Symptom:** app footprint grows to 1.5 GB after ~12 days of uptime.
+
+The sections below preserve the original investigation. Cancellation now removes
+unsent frames from the write queue, offline heartbeats are dropped, and the
+control worker stops matrix polling while disconnected. A sent request timing
+out triggers an IO-thread close/reopen and a VIA protocol-version exchange to
+consume older replies before accepting new requests. Regression tests in
+`tests/test_hid_io.py` cover retention, replay, cancellation races, and delayed
+responses; `tests/test_reconnect.py` covers offline polling and reconnection.
 
 ## Root cause
 

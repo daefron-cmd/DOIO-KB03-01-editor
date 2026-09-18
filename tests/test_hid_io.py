@@ -1,8 +1,11 @@
 import pytest
 
 from hid_io import (
-    HidIoWorker, IdUnhandledError, TransportClosedError,
-    RAW_EPSIZE, build_raw_hid_frame,
+    HidIoWorker,
+    IdUnhandledError,
+    TransportClosedError,
+    RAW_EPSIZE,
+    build_raw_hid_frame,
 )
 
 
@@ -19,6 +22,8 @@ class FakeHID:
         if self._closed:
             raise OSError("closed")
         self.writes.append(bytes(data))
+        if data[1] == 0x01:
+            self.queue_reply([0x01, 0, 12])
         return len(data)
 
     def read(self, n, timeout=0):
@@ -38,12 +43,13 @@ class FakeHID:
 
 # --- frame builder validation ---
 
+
 def test_build_raw_hid_frame_is_report_id_plus_32_bytes():
     frame = build_raw_hid_frame([0xA0, 0x01])
     assert len(frame) == 1 + RAW_EPSIZE
-    assert frame[0] == 0x00     # report id
-    assert frame[1] == 0xA0     # cmd id
-    assert frame[2] == 0x01     # version
+    assert frame[0] == 0x00  # report id
+    assert frame[1] == 0xA0  # cmd id
+    assert frame[2] == 0x01  # version
     assert frame[3:] == bytes(RAW_EPSIZE - 2)  # zero-padded
 
 
@@ -58,6 +64,7 @@ def test_build_raw_hid_frame_rejects_over_32_bytes():
 
 
 # --- write enqueue + IO-thread drain ---
+
 
 def test_send_request_enqueues_and_drains_on_pump():
     dev = FakeHID()
@@ -86,8 +93,8 @@ def test_send_untracked_writes_but_creates_no_future():
 def test_send_request_without_device_stays_pending_until_close():
     worker = HidIoWorker(open_fn=lambda: None)
     fut = worker.send_request([0x04])
-    assert not fut.done()       # waits for handle
-    worker.stop()                # close: fails all pending
+    assert not fut.done()  # waits for handle
+    worker.stop()  # close: fails all pending
     with pytest.raises(TransportClosedError):
         fut.result(timeout=0.1)
 
@@ -146,9 +153,11 @@ def test_read_error_streak_closes_handle_and_fails_pending():
     worker = HidIoWorker.with_handle(dev)
     fut = worker.send_request([0x04, 0])
     worker.pump_writes()
+
     # Force read errors
     def bad_read(*a, **kw):
         raise OSError("boom")
+
     dev.read = bad_read
     states = []
     worker.device_state.connect(lambda s: states.append(s))
@@ -179,14 +188,14 @@ def test_transient_read_error_does_not_emit_no_device():
         if call_count[0] == 1:
             raise OSError("transient")
         return original_read(*a, **kw)
+
     dev.read = flaky_read
 
     worker.pump_once()  # error #1 — streak 1
     worker.pump_once()  # success — streak resets to 0
 
-    assert states == [], (
-        f"transient error spuriously emitted device_state: {states}")
-    assert worker._dev is dev   # not closed
+    assert states == [], f"transient error spuriously emitted device_state: {states}"
+    assert worker._dev is dev  # not closed
     assert worker._error_streak == 0
 
 
@@ -217,7 +226,7 @@ def test_id_unhandled_fails_oldest_global_inflight():
     command id (NOT 'first queue found in a dict iteration')."""
     dev = FakeHID()
     worker = HidIoWorker.with_handle(dev)
-    first = worker.send_request([0x04, 0])   # cmd 0x04 first
+    first = worker.send_request([0x04, 0])  # cmd 0x04 first
     second = worker.send_request([0x05, 0])  # cmd 0x05 second
     worker.pump_writes()
     dev.queue_reply([0xFF])
@@ -337,11 +346,13 @@ def test_mid_batch_write_error_fails_all_pending_in_batch():
     # First write succeeds, second raises, third would-have-succeeded
     original_write = dev.write
     state = {"calls": 0}
+
     def write_with_failure(data):
         state["calls"] += 1
         if state["calls"] == 2:
             raise OSError("boom mid-batch")
         return original_write(data)
+
     dev.write = write_with_failure
     worker.pump_writes()
     # f1 was written; its future is still pending a reply (correct).
@@ -352,3 +363,111 @@ def test_mid_batch_write_error_fails_all_pending_in_batch():
         f2.result(timeout=0.1)
     with pytest.raises(TransportClosedError):
         f3.result(timeout=0.1)
+
+
+def test_cancelled_unsent_requests_do_not_leak_or_replay():
+    worker = HidIoWorker(open_fn=lambda: None)
+    for _ in range(100):
+        fut = worker.send_request([0x02, 0x03, 0])
+        worker.cancel(fut)
+    assert worker.pending_count() == 0
+    assert not worker._write_q
+    dev = FakeHID()
+    worker._dev = dev
+    worker.pump_writes()
+    assert dev.writes == []
+
+
+def test_offline_heartbeats_are_dropped():
+    worker = HidIoWorker(open_fn=lambda: None)
+    for _ in range(100):
+        worker.send_untracked([0xA0, 0x01])
+    assert not worker._write_q
+
+
+def test_timeout_resets_stream_before_another_request_can_use_late_reply():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    old = worker.send_request([0x04, 0, 0, 1])
+    worker.pump_writes()
+    worker.cancel(old)
+    new = worker.send_request([0x04, 0, 0, 2])
+    dev.queue_reply([0x04, 0, 0, 1, 0xAA, 0xAA])
+    worker.pump_once()
+    with pytest.raises(TransportClosedError):
+        new.result(timeout=0.1)
+    assert dev._closed
+    assert len(dev.writes) == 1
+
+
+def test_wrong_echo_does_not_complete_key_read():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0, 0, 2])
+    dev.queue_reply([0x04, 0, 0, 1, 0xAA, 0xAA])
+    worker.pump_once()
+    assert not fut.done()
+    dev.queue_reply([0x04, 0, 0, 2, 0xBB, 0xBB])
+    worker.pump_once()
+    assert fut.result()[4:6] == [0xBB, 0xBB]
+
+
+def test_cancel_during_write_error_does_not_escape_io_loop():
+    dev = FakeHID()
+    worker = HidIoWorker.with_handle(dev)
+    fut = worker.send_request([0x04, 0, 0, 1])
+
+    def cancelled_write(_frame):
+        worker.cancel(fut)
+        raise OSError("disconnected during write")
+
+    dev.write = cancelled_write
+    worker.pump_once()
+    assert fut.cancelled()
+
+
+def test_reopen_discards_buffered_replies_before_accepting_requests():
+    dev = FakeHID()
+    dev.queue_reply([0x04, 0, 0, 1, 0xAA, 0xAA])
+    worker = HidIoWorker(open_fn=lambda: dev)
+    assert worker.maybe_reopen()
+    fut = worker.send_request([0x04, 0, 0, 1])
+    worker.pump_once()
+    assert not fut.done()
+    dev.queue_reply([0x04, 0, 0, 1, 0xBB, 0xBB])
+    worker.pump_once()
+    assert fut.result()[4:6] == [0xBB, 0xBB]
+
+
+def test_reopen_waits_for_barrier_even_after_a_quiet_read():
+    class DelayedHID(FakeHID):
+        quiet = True
+
+        def read(self, n, timeout=0):
+            if self.quiet:
+                self.quiet = False
+                return []
+            return super().read(n, timeout)
+
+    dev = DelayedHID()
+    dev.queue_reply([0x04, 0, 0, 1, 0xAA, 0xAA])
+    worker = HidIoWorker(open_fn=lambda: dev)
+    assert worker.maybe_reopen()
+    fut = worker.send_request([0x04, 0, 0, 1])
+    worker.pump_once()
+    assert not fut.done()
+    dev.queue_reply([0x04, 0, 0, 1, 0xBB, 0xBB])
+    worker.pump_once()
+    assert fut.result()[4:6] == [0xBB, 0xBB]
+
+
+def test_open_drain_read_error_closes_unusable_handle():
+    dev = FakeHID()
+
+    def bad_read(*args):
+        raise OSError("unplugged while opening")
+
+    dev.read = bad_read
+    worker = HidIoWorker(open_fn=lambda: dev)
+    assert not worker.maybe_reopen()
+    assert dev._closed
