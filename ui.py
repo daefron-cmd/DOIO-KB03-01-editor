@@ -7,10 +7,28 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
-    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QGraphicsDropShadowEffect,
-    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QPushButton,
-    QRadioButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QGraphicsDropShadowEffect,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
 )
 import re
 
@@ -24,7 +42,7 @@ from scroll_lab import ScrollLabWindow
 ROOT = Path(__file__).resolve().parent
 
 # control_id -> (label, slot-setter) wiring is built from device topology.
-KEY_COLS = [0, 1, 2, 4]   # Key1, Key2, Key3, Knob push (col 3 = advanced)
+KEY_COLS = [0, 1, 2, 4]  # Key1, Key2, Key3, Knob push (col 3 = advanced)
 # (enc, dir); verified Task 11: enc 1 = outer ring, enc 0 = inner knob. Outer
 # ring listed first (primary control). dir 0/1 = CCW/CW per QMK convention.
 ENCODERS = [(1, 0), (1, 1), (0, 0), (0, 1)]
@@ -110,8 +128,11 @@ class RoundIndicator(QWidget):
         painter.setPen(QPen(self._border, pen_width))
         painter.setBrush(self._color)
         inset = pen_width / 2
-        painter.drawEllipse(self.rect().adjusted(
-            round(inset), round(inset), -round(inset), -round(inset)))
+        painter.drawEllipse(
+            self.rect().adjusted(
+                round(inset), round(inset), -round(inset), -round(inset)
+            )
+        )
 
 
 class DevicePanel(QWidget):
@@ -210,7 +231,9 @@ class DevicePanel(QWidget):
 
     def _image_rect(self) -> QRect:
         side = min(self.width(), self.height())
-        return QRect((self.width() - side) // 2, (self.height() - side) // 2, side, side)
+        return QRect(
+            (self.width() - side) // 2, (self.height() - side) // 2, side, side
+        )
 
     def _scaled_rect(self, src: QRect, min_width: int, min_height: int) -> QRect:
         image_rect = self._image_rect()
@@ -554,8 +577,7 @@ class KeycodePickerDialog(QDialog):
 
         # Pre-split each catalog label once; both render and search use it.
         self._entries: list[tuple[str, str | None, str, int]] = [
-            (cat, *_split_catalog_label(label), code)
-            for cat, label, code in CATALOG
+            (cat, *_split_catalog_label(label), code) for cat, label, code in CATALOG
         ]
         self._categories = sorted({cat for cat, _, _, _ in self._entries})
         self._selected_code: int | None = None
@@ -566,7 +588,8 @@ class KeycodePickerDialog(QDialog):
 
         self._search = QLineEdit()
         self._search.setPlaceholderText(
-            "Search (name, category, or 0x… hex — e.g. vol, F7, MO, 0x004F)")
+            "Search (name, category, or 0x… hex — e.g. vol, F7, MO, 0x004F)"
+        )
         self._search.textChanged.connect(self._refresh_items)
         self._search.returnPressed.connect(self._on_search_enter)
         outer.addWidget(self._search)
@@ -604,8 +627,7 @@ class KeycodePickerDialog(QDialog):
 
         outer.addLayout(body, stretch=1)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept_current)
         buttons.rejected.connect(self.reject)
         self._ok_button = buttons.button(QDialogButtonBox.Ok)
@@ -615,8 +637,7 @@ class KeycodePickerDialog(QDialog):
         initial_row = 0
         if current is not None:
             for i, cat in enumerate(self._categories, start=1):
-                if any(c == current and cat_ == cat
-                       for cat_, _, _, c in self._entries):
+                if any(c == current and cat_ == cat for cat_, _, _, c in self._entries):
                     initial_row = i
                     break
         self._cat_list.setCurrentRow(initial_row)
@@ -646,8 +667,7 @@ class KeycodePickerDialog(QDialog):
         cat_idx = self._cat_list.currentRow()
         # When the user is searching, treat the category filter as global so a
         # leftover sidebar selection can't hide an obvious match.
-        chosen_cat = (None if query or cat_idx <= 0
-                      else self._categories[cat_idx - 1])
+        chosen_cat = None if query or cat_idx <= 0 else self._categories[cat_idx - 1]
         self._cat_list.setEnabled(not query)
 
         self._item_list.clear()
@@ -704,18 +724,24 @@ class ScrollFeelPanel(QGroupBox):
     SLIDERS = [
         # (attr,                label,            lo,    hi,   step)
         # max_gain slider stores integer ×10 (1.0× → 10).
-        ("impulse_per_detent",  "Impulse",        20,    500,  10),
-        ("tau_ms",              "Decay τ",        50,    2000, 50),
-        ("slow_threshold",      "Slow threshold", 50,    1000, 25),
-        ("fast_threshold",      "Fast threshold", 500,   5000, 100),
-        ("max_gain",            "Max gain",       10,    120,  5),
-        ("active_window_ms",    "Active window",  30,    250,  10),
-        ("coast_threshold",     "Coast threshold",50,    2000, 25),
-        ("cutoff_v",            "Momentum cutoff",5,     200,  5),
+        ("impulse_per_detent", "Impulse", 20, 500, 10),
+        ("tau_ms", "Decay τ", 50, 2000, 50),
+        ("slow_threshold", "Slow threshold", 50, 1000, 25),
+        ("fast_threshold", "Fast threshold", 500, 5000, 100),
+        ("max_gain", "Max gain", 10, 120, 5),
+        ("active_window_ms", "Active window", 30, 250, 10),
+        ("coast_threshold", "Coast threshold", 50, 2000, 25),
+        ("cutoff_v", "Momentum cutoff", 5, 200, 5),
     ]
 
-    def __init__(self, config: ScrollConfig, config_path,
-                 scroll_engine, ax_trusted: bool, imports_ok: bool):
+    def __init__(
+        self,
+        config: ScrollConfig,
+        config_path,
+        scroll_engine,
+        ax_trusted: bool,
+        imports_ok: bool,
+    ):
         super().__init__("Scroll feel — outer ring")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._config = config
@@ -733,8 +759,7 @@ class ScrollFeelPanel(QGroupBox):
         }
         self._tick_count = 0
         if self._engine is not None:
-            self.config_changed.connect(
-                self._engine.reload_config, Qt.QueuedConnection)
+            self.config_changed.connect(self._engine.reload_config, Qt.QueuedConnection)
 
         v = QVBoxLayout(self)
         v.setContentsMargins(10, 18, 10, 10)
@@ -793,7 +818,8 @@ class ScrollFeelPanel(QGroupBox):
             val_lbl.setMinimumWidth(48)
             val_lbl.setMaximumWidth(58)
             slider.valueChanged.connect(
-                lambda val, a=attr: self._on_slider_change(a, val))
+                lambda val, a=attr: self._on_slider_change(a, val)
+            )
             self._sliders[attr] = slider
             self._value_labels[attr] = val_lbl
             self._refresh_value_label(attr)
@@ -819,7 +845,8 @@ class ScrollFeelPanel(QGroupBox):
         self._scroll_lab_button = QPushButton("Open infinite text test")
         self._scroll_lab_button.setObjectName("scrollLabButton")
         self._scroll_lab_button.setToolTip(
-            "Open a separate, endless text surface for scroll tuning")
+            "Open a separate, endless text surface for scroll tuning"
+        )
         self._scroll_lab_button.clicked.connect(self._open_scroll_lab)
         test_row.addWidget(self._scroll_lab_button)
         test_row.addStretch()
@@ -845,8 +872,7 @@ class ScrollFeelPanel(QGroupBox):
         # Enforce ordering invariant on the fly
         if self._config.coast_threshold < self._config.cutoff_v:
             self._config.coast_threshold = self._config.cutoff_v
-            self._sliders["coast_threshold"].setValue(
-                int(self._config.coast_threshold))
+            self._sliders["coast_threshold"].setValue(int(self._config.coast_threshold))
         self._refresh_value_label(attr)
         if self._engine is not None:
             self.config_changed.emit(self._config)
@@ -873,6 +899,7 @@ class ScrollFeelPanel(QGroupBox):
 
     def _on_recheck(self) -> None:
         from scroll import is_accessibility_trusted
+
         trusted = is_accessibility_trusted(prompt=True)
         self._update_banner(imports_ok=True, ax_trusted=trusted)
         # Emit a Qt signal — main.py connects this to
@@ -888,7 +915,8 @@ class ScrollFeelPanel(QGroupBox):
             self._banner.setStyleSheet("background: #ffe0e0; padding: 6px;")
             self._banner.setText(
                 "pyobjc-framework-Quartz is missing. The outer encoder will "
-                "fall back to plain wheel events. Run `uv sync`.")
+                "fall back to plain wheel events. Run `uv sync`."
+            )
         elif not ax_trusted:
             self._banner.setStyleSheet("background: #fff3e0; padding: 6px;")
             self._banner.setText(
@@ -896,7 +924,8 @@ class ScrollFeelPanel(QGroupBox):
                 "fallback mode. Grant in System Settings → Privacy & Security "
                 "→ Accessibility, then click Re-check. If Re-check does not "
                 "turn this green, relaunch the app — macOS may require a "
-                "fresh process to recognise the new trust state.")
+                "fresh process to recognise the new trust state."
+            )
         else:
             self._banner.setStyleSheet("background: #e0ffe0; padding: 6px;")
             self._banner.setText("MX-Master scroll active.")
@@ -905,8 +934,8 @@ class ScrollFeelPanel(QGroupBox):
     def _update_recheck_visibility(self) -> None:
         if hasattr(self, "_recheck"):
             self._recheck.setVisible(
-                self._readiness["imports_ok"]
-                and not self._readiness["ax_trusted"])
+                self._readiness["imports_ok"] and not self._readiness["ax_trusted"]
+            )
 
     @Slot(object)
     def on_readiness_changed(self, readiness: object) -> None:
@@ -940,8 +969,7 @@ class ScrollFeelPanel(QGroupBox):
             if self._tick_count > 0
             else "Firmware: fallback/no pings"
         )
-        self._host_status.setText(
-            f"{host}\n{platform}\n{firmware}")
+        self._host_status.setText(f"{host}\n{platform}\n{firmware}")
 
 
 class MainWindow(QMainWindow):
@@ -956,10 +984,17 @@ class MainWindow(QMainWindow):
     req_save = Signal()
     req_reconnect = Signal()
 
-    def __init__(self, control, listener, *,
-                 scroll_engine=None, imports_ok: bool = True,
-                 ax_trusted_initial: bool = True,
-                 config=None, config_path=None):
+    def __init__(
+        self,
+        control,
+        listener,
+        *,
+        scroll_engine=None,
+        imports_ok: bool = True,
+        ax_trusted_initial: bool = True,
+        config=None,
+        config_path=None,
+    ):
         super().__init__()
         self.setWindowTitle("DOIO KB03-01")
         self._control = control
@@ -983,6 +1018,7 @@ class MainWindow(QMainWindow):
         self._saved_lighting: LightingState | None = None
         self._lighting: LightingState | None = None
         self._lighting_saving = False
+        self._lighting_save_target: LightingState | None = None
 
         self.setMinimumSize(1060, 720)
         root = QWidget()
@@ -1119,8 +1155,12 @@ class MainWindow(QMainWindow):
         }
         for cid, label_rect in key_labels.items():
             btn = self._device_panel.add_control(
-                cid, label_rect, "—", partial(self._select, cid),
-                target_rect=key_targets[cid])
+                cid,
+                label_rect,
+                "—",
+                partial(self._select, cid),
+                target_rect=key_targets[cid],
+            )
             self._control_buttons[cid] = btn
 
         encoder_targets = {
@@ -1139,12 +1179,17 @@ class MainWindow(QMainWindow):
             enc, direction = cid[1], cid[2]
             text = f"{ENC_NAMES[enc]} {DIR_NAMES[direction]}\n—"
             btn = self._device_panel.add_control(
-                cid, label_rect, text, partial(self._select, cid),
-                target_rect=encoder_targets[cid])
+                cid,
+                label_rect,
+                text,
+                partial(self._select, cid),
+                target_rect=encoder_targets[cid],
+            )
             self._control_buttons[cid] = btn
 
         self._layer_led = self._device_panel.add_indicator(
-            "layer", QRect(664, 802, 50, 50))
+            "layer", QRect(664, 802, 50, 50)
+        )
         self._workspace_v.addWidget(self._device_panel, stretch=1)
 
     def _build_editor(self):
@@ -1172,19 +1217,21 @@ class MainWindow(QMainWindow):
 
         self._sliders = {}
         self._slider_values = {}
-        self._pending = {}                 # value_id/"color" -> latest value
-        self._tick = QTimer(self)          # ~25 Hz coalescing flush
+        self._pending = {}  # value_id/"color" -> latest value
+        self._tick = QTimer(self)  # ~25 Hz coalescing flush
         self._tick.setInterval(40)
         self._tick.timeout.connect(self._flush_sliders)
         self._tick.start()
 
-        specs = [("Brightness", core.LIGHT_BRIGHTNESS, 200),
-                 ("Speed", core.LIGHT_SPEED, 255),
-                 ("Hue", "hue", 255),
-                 ("Sat", "sat", 255)]
+        specs = [
+            ("Brightness", core.LIGHT_BRIGHTNESS, 200),
+            ("Speed", core.LIGHT_SPEED, 255),
+            ("Hue", "hue", 255),
+            ("Sat", "sat", 255),
+        ]
         for r, (name, key, maximum) in enumerate(specs, start=1):
             s = QSlider(Qt.Horizontal)
-            s.setMaximum(maximum)          # brightness capped at 200 (render cap)
+            s.setMaximum(maximum)  # brightness capped at 200 (render cap)
             s.valueChanged.connect(partial(self._on_slider, key))
             self._sliders[key] = s
             value = QLabel("0")
@@ -1226,7 +1273,8 @@ class MainWindow(QMainWindow):
         if self._scroll_engine is None:
             return
         self.scroll_panel = ScrollFeelPanel(
-            self._scroll_config, self._scroll_config_path,
+            self._scroll_config,
+            self._scroll_config_path,
             self._scroll_engine,
             ax_trusted=self._ax_trusted,
             imports_ok=self._imports_ok,
@@ -1248,7 +1296,7 @@ class MainWindow(QMainWindow):
         if self._lighting is not None:
             self._lighting = self._lighting_with(key, value)
             self._refresh_lighting_ui()
-        self._pending[key] = value         # coalesce to latest; flushed at 25 Hz
+        self._pending[key] = value  # coalesce to latest; flushed at 25 Hz
 
     def _on_effect_pick(self, _index):
         effect = self._effect.currentData()
@@ -1265,7 +1313,7 @@ class MainWindow(QMainWindow):
         if "hue" in pend or "sat" in pend:
             hue = self._sliders["hue"].value()
             sat = self._sliders["sat"].value()
-            self.req_set_color.emit(hue, sat)   # both channels, one command
+            self.req_set_color.emit(hue, sat)  # both channels, one command
         for key, value in pend.items():
             if key in (core.LIGHT_BRIGHTNESS, core.LIGHT_SPEED):
                 self.req_set_scalar.emit(key, value)
@@ -1292,9 +1340,11 @@ class MainWindow(QMainWindow):
     def _save_lighting(self):
         if self._lighting is None or self._lighting_saving:
             return
+        self._flush_sliders()
+        self._lighting_save_target = self._lighting
         self._lighting_saving = True
         self._refresh_lighting_ui()
-        self.req_save.emit()   # signal→slot across threads = queued
+        self.req_save.emit()  # signal→slot across threads = queued
 
     def _revert_lighting(self):
         if self._saved_lighting is None:
@@ -1302,6 +1352,7 @@ class MainWindow(QMainWindow):
         self._apply_lighting(self._saved_lighting, live_preview=True)
 
     def _apply_lighting(self, state: LightingState, live_preview: bool):
+        self._pending.clear()
         self._lighting = state
         effect_index = min(state.effect, self._effect.count() - 1)
         self._effect.blockSignals(True)
@@ -1331,8 +1382,12 @@ class MainWindow(QMainWindow):
             return
         loaded = self._lighting is not None
         dirty = loaded and self._lighting != self._saved_lighting
-        self._save_lighting_btn.setEnabled(loaded and dirty and not self._lighting_saving)
-        self._revert_lighting_btn.setEnabled(loaded and dirty and not self._lighting_saving)
+        self._save_lighting_btn.setEnabled(
+            loaded and dirty and not self._lighting_saving
+        )
+        self._revert_lighting_btn.setEnabled(
+            loaded and dirty and not self._lighting_saving
+        )
         if self._lighting_saving:
             self._save_lighting_btn.setText("Saving...")
             self._lighting_status.setText("Saving lighting to keyboard")
@@ -1352,7 +1407,8 @@ class MainWindow(QMainWindow):
             )
             self._color_swatch.setStyleSheet(
                 "background: %s; border: 1px solid #746b5d; border-radius: 7px;"
-                % color.name())
+                % color.name()
+            )
 
     # --- worker/listener slots ---
     def _on_device_state(self, state):
@@ -1410,10 +1466,11 @@ class MainWindow(QMainWindow):
 
     def _on_lighting_saved(self, ok: bool):
         self._lighting_saving = False
-        if ok and self._lighting is not None:
-            self._saved_lighting = self._lighting
+        if ok and self._lighting_save_target is not None:
+            self._saved_lighting = self._lighting_save_target
         elif not ok:
             self._banner.setText("Lighting save failed — reconnecting may be needed")
+        self._lighting_save_target = None
         self._refresh_lighting_ui()
 
     def _on_layer_pick(self, ly, checked):
@@ -1428,12 +1485,14 @@ class MainWindow(QMainWindow):
             return
         for col in (0, 1, 2, 4):
             self._control_buttons[key_id(col)].setText(
-                self._button_text(self._snapshot.keymap[self._layer][col]))
+                self._button_text(self._snapshot.keymap[self._layer][col])
+            )
         for enc, direction in ENCODERS:
             label = f"{self._short_encoder_name(enc)} {DIR_NAMES[direction]}"
             mapping = render(self._snapshot.encoders[self._layer][enc][direction])
             self._control_buttons[enc_id(enc, direction)].setText(
-                f"{label}\n{self._button_text(mapping=mapping)}")
+                f"{label}\n{self._button_text(mapping=mapping)}"
+            )
 
     def _select(self, cid):
         self._selected = cid
