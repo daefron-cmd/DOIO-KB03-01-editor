@@ -92,6 +92,37 @@ def test_missing_device_status_takes_priority_over_permission(window):
     assert not window._reconnect_btn.isHidden()
 
 
+def test_working_via_highlights_are_a_neutral_status(window):
+    window._on_permission_state("input-monitoring-denied")
+    window._on_matrix_state("available")
+    assert window._banner.text() == "Key highlights via VIA"
+    assert window._banner.styleSheet() == "color: #706a5c;"
+    assert window._reconnect_btn.isHidden()
+
+    window._on_device_state("no-device")
+    assert "DOIO not found" in window._banner.text()
+    assert window._banner.styleSheet() == ""
+    assert not window._reconnect_btn.isHidden()
+
+
+@pytest.mark.parametrize("matrix_state", ["", "unsupported"])
+def test_unavailable_highlights_still_warn(window, matrix_state):
+    window._on_permission_state("input-monitoring-denied")
+    window._on_matrix_state("available")
+    window._on_matrix_state(matrix_state)
+    assert "Live key highlights unavailable" in window._banner.text()
+    assert "this app" in window._banner.text()
+    assert window._banner.styleSheet() == ""
+
+
+def test_direct_hid_recovery_clears_via_status(window):
+    window._on_permission_state("input-monitoring-denied")
+    window._on_matrix_state("available")
+    window._on_permission_state("")
+    assert window._banner.text() == ""
+    assert window._banner.styleSheet() == ""
+
+
 def test_disconnect_clears_inferred_holds_and_pending_preview(window):
     window._snapshot.keymap[0][0] = layer(MO, 1)
     window._on_matrix_press(key_id(0))

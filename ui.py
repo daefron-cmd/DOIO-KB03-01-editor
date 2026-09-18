@@ -1434,18 +1434,20 @@ class MainWindow(QMainWindow):
         self._update_banner()
 
     def _update_banner(self):
+        self._banner.setStyleSheet("")
         if self._device_state == "no-device":
             self._banner.setText("DOIO not found — plug it in")
             self._reconnect_btn.show()
             return
         if self._permission_state == "input-monitoring-denied":
             if self._matrix_state == "available":
-                self._banner.setText(
-                    "Keyboard HID is blocked; key highlights are using VIA fallback")
+                self._banner.setText("Key highlights via VIA")
+                self._banner.setStyleSheet("color: #706a5c;")
                 self._reconnect_btn.hide()
                 return
             self._banner.setText(
-                "Keyboard input is blocked — restart the launching terminal after granting Input Monitoring")
+                "Live key highlights unavailable — enable Input Monitoring for this app, then reopen it"
+            )
             self._reconnect_btn.hide()
             return
         if self._is_loading:
