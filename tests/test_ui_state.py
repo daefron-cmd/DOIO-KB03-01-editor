@@ -1,8 +1,9 @@
 import pytest
 
 import core
+from catalog import MO, layer
 from listener import Listener
-from model import Snapshot
+from model import Snapshot, key_id
 from ui import MainWindow
 from worker import ControlWorker
 
@@ -69,3 +70,16 @@ def test_revert_discards_pending_slider_values(window):
         not in window._control.commands
     )
     assert window._lighting == window._saved_lighting
+
+
+def test_nested_momentary_layers_survive_radio_button_sync(window):
+    window._snapshot.keymap[0][0] = layer(MO, 1)
+    window._snapshot.keymap[1][1] = layer(MO, 2)
+    window._on_matrix_press(key_id(0))
+    window._on_matrix_press(key_id(1))
+    window._on_matrix_release(key_id(1))
+    assert window._inferred_layer.highest == 1
+    assert window._layer == 1
+    window._on_matrix_release(key_id(0))
+    assert window._inferred_layer.highest == 0
+    assert window._layer == 0

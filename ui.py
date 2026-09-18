@@ -197,7 +197,7 @@ class DevicePanel(QWidget):
         if cid not in self._controls:
             return
         self._apply_button_state(cid, flash=True)
-        QTimer.singleShot(duration_ms, lambda: self._apply_button_state(cid))
+        QTimer.singleShot(duration_ms, self, lambda: self._apply_button_state(cid))
 
     def resizeEvent(self, _event):
         self._layout_children()
@@ -1569,7 +1569,16 @@ class MainWindow(QMainWindow):
         target = self._inferred_layer.highest
         if target == previous or target >= len(self._layer_buttons):
             return
+        # A display update must not run the manual layer-selection handler:
+        # that replaces the active mask and loses held/toggled lower layers.
+        for button in self._layer_buttons:
+            button.blockSignals(True)
         self._layer_buttons[target].setChecked(True)
+        for button in self._layer_buttons:
+            button.blockSignals(False)
+        self._layer = target
+        self._set_layer_led(target)
+        self._refresh_controls()
 
     def _set_layer_led(self, layer: int):
         dot = getattr(self, "_layer_led", None)
