@@ -83,3 +83,19 @@ def test_nested_momentary_layers_survive_radio_button_sync(window):
     window._on_matrix_release(key_id(0))
     assert window._inferred_layer.highest == 0
     assert window._layer == 0
+
+
+def test_missing_device_status_takes_priority_over_permission(window):
+    window._on_permission_state("input-monitoring-denied")
+    window._on_device_state("no-device")
+    assert "DOIO not found" in window._banner.text()
+    assert not window._reconnect_btn.isHidden()
+
+
+def test_disconnect_clears_inferred_holds_and_pending_preview(window):
+    window._snapshot.keymap[0][0] = layer(MO, 1)
+    window._on_matrix_press(key_id(0))
+    window._sliders[core.LIGHT_BRIGHTNESS].setValue(100)
+    window._on_device_state("no-device")
+    assert window._inferred_layer.highest == 0
+    assert not window._pending

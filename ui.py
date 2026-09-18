@@ -1413,6 +1413,12 @@ class MainWindow(QMainWindow):
     # --- worker/listener slots ---
     def _on_device_state(self, state):
         self._device_state = state
+        if state == "no-device":
+            self._pending.clear()
+            self._matrix_state = ""
+            previous = self._inferred_layer.highest
+            self._inferred_layer.reset()
+            self._sync_inferred_layer(previous)
         self._update_banner()
 
     def _on_permission_state(self, state):
@@ -1428,6 +1434,10 @@ class MainWindow(QMainWindow):
         self._update_banner()
 
     def _update_banner(self):
+        if self._device_state == "no-device":
+            self._banner.setText("DOIO not found — plug it in")
+            self._reconnect_btn.show()
+            return
         if self._permission_state == "input-monitoring-denied":
             if self._matrix_state == "available":
                 self._banner.setText(

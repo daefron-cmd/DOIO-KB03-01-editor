@@ -83,7 +83,10 @@ class ControlWorker(QObject):
     @Slot()
     def start(self):
         self._start_matrix_poll()
-        self.load_all()
+        if self._readiness.handle_open:
+            self.load_all()
+        else:
+            self.device_state.emit("no-device")
         # Do NOT infer handle_open from matrix state. handle_open is set
         # by _on_device_state from HidIoWorker.
 
@@ -126,9 +129,13 @@ class ControlWorker(QObject):
                 self.loading.emit(False)
                 return
             snap = Snapshot(
-                keymap=keymap, encoders=encoders,
-                brightness=b[3], effect=e[3], speed=s[3],
-                hue=c[3], sat=c[4],
+                keymap=keymap,
+                encoders=encoders,
+                brightness=b[3],
+                effect=e[3],
+                speed=s[3],
+                hue=c[3],
+                sat=c[4],
             )
         finally:
             self.loading.emit(False)
@@ -163,17 +170,17 @@ class ControlWorker(QObject):
         self.lighting_saved.emit(r is not None)
 
     def _start_matrix_poll(self):
-        if self._matrix_timer is not None:
-            self._pressed_cols = set()
+        if self._matrix_timer is None:
+            self._matrix_timer = QTimer(self)
+            self._matrix_timer.setInterval(30)
+            self._matrix_timer.timeout.connect(self._poll_matrix)
+        if self._readiness.handle_open:
             self._matrix_timer.start()
-            return
-        self._matrix_timer = QTimer(self)
-        self._matrix_timer.setInterval(30)
-        self._matrix_timer.timeout.connect(self._poll_matrix)
-        self._matrix_timer.start()
 
     @Slot()
     def _poll_matrix(self):
+        if not self._readiness.handle_open:
+            return
         r = self._request(core.build_pressed_cols())
         if r is None:
             return
@@ -210,13 +217,15 @@ class ControlWorker(QObject):
             self._start_heartbeat()
         elif not is_ready and was_ready:
             self._stop_heartbeat()
-        self.readiness_changed.emit({
-            "handle_open": self._readiness.handle_open,
-            "imports_ok": self._readiness.imports_ok,
-            "ax_trusted": self._readiness.ax_trusted,
-            "engine_running": self._readiness.engine_running,
-            "ready": is_ready,
-        })
+        self.readiness_changed.emit(
+            {
+                "handle_open": self._readiness.handle_open,
+                "imports_ok": self._readiness.imports_ok,
+                "ax_trusted": self._readiness.ax_trusted,
+                "engine_running": self._readiness.engine_running,
+                "ready": is_ready,
+            }
+        )
 
     # ---- bound adapters: connect signals to THESE, not to lambdas. ----
 
@@ -238,16 +247,30 @@ class ControlWorker(QObject):
 
     @Slot(str)
     def _on_device_state(self, s: str) -> None:
+        was_open = self._readiness.handle_open
         if s == "":
             self.update_readiness("handle_open", True)
+            self.device_state.emit("")
+            if not was_open:
+                self.load_all()
+                self._start_matrix_poll()
         elif s == "no-device":
             self.update_readiness("handle_open", False)
+            if self._matrix_timer is not None:
+                self._matrix_timer.stop()
+            for col in sorted(self._pressed_cols):
+                self.matrix_release.emit(key_id(col))
+            self._pressed_cols.clear()
+            self._matrix_state = ""
+            self.matrix_state.emit("")
+            self.device_state.emit("no-device")
 
     def _start_heartbeat(self) -> None:
         # MUST be called on control_thread. update_readiness enforces this
         # transitively because external callers go through queued slots.
         assert self.thread() == QThread.currentThread(), (
-            "_start_heartbeat called off-thread — check signal wiring")
+            "_start_heartbeat called off-thread — check signal wiring"
+        )
         if self._heartbeat_timer is None:
             self._heartbeat_timer = QTimer(self)
             self._heartbeat_timer.setInterval(200)
