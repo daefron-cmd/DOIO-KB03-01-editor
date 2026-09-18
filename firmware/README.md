@@ -4,8 +4,8 @@ QMK firmware sources, build helper, and flashable dumps for the DOIO KB03-01.
 
 The host-side GUI in this repo can remap keys, encoders, and lighting over VIA
 without ever rebuilding firmware. This directory is for the cases VIA can't
-reach: things baked at compile time (mousekey wheel constants, encoder maps
-when `ENCODER_MAP_ENABLE` is on), recovery to a known-good image, and storing
+reach: things baked at compile time (mousekey wheel constants and custom
+scroll handling), recovery to a known-good image, and storing
 the binaries we actually flashed onto this unit.
 
 ## Layout
@@ -13,7 +13,7 @@ the binaries we actually flashed onto this unit.
 | Path | What it is |
 |---|---|
 | `keymaps/vegar/` | Custom keymap source — `config.h` (mousekey wheel tuning), `keymap.c` (4-layer layout with mouse / media / lights layers), `rules.mk` (encoder map + VIA on). |
-| `dumps/doio_kb03_vegar_scroll_20260810.{bin,hex}` | Current verified build from `keymaps/vegar/`, flashed on 2026-08-10; reserves the outer ring for host scroll on all four layers and resets stale VIA encoder mappings at boot. |
+| `dumps/doio_kb03_vegar_scroll_20260810.{bin,hex}` | Last hardware-verified build, flashed on 2026-08-10. It reserves the outer ring but resets **all** VIA key/encoder remaps on every boot. It does not contain the persistence fix now in source. |
 | `dumps/candidate_doio_kb03_vegar.{bin,hex}` | Historical image from before the all-layer scroll implementation; retained for provenance, not for the MX Master host-scroll setup. |
 | `dumps/rescue_doio_kb03_default.{bin,hex}` | Stock `doio/kb03:default` build. Flash this to roll back. |
 | `dumps/keymap_dump_initial.txt` | Pre-customization output of `scripts/keymap_dump.py` — matrix shape + per-layer keycodes as the unit shipped. Reference snapshot. |
@@ -32,6 +32,13 @@ qmk setup -H firmware/qmk_firmware    # answers "yes" to the prompts
 ```
 
 ## Build
+
+The current source preserves VIA key and inner-encoder remaps across boots.
+It repairs only the outer ring's two reserved scroll bindings on each layer,
+writing only entries that differ. Build and flash a new image to get this fix;
+the tracked reference binaries have not been replaced or reflashed.
+The host-side C harness verifies the boot hook with simulated persistent
+storage, but a full QMK build and device power-cycle test are still required.
 
 ```bash
 cd firmware
@@ -73,8 +80,9 @@ Before flashing a prebuilt image, verify it from the repository root:
   different QMK target and is not covered here.
 - VIA raw-HID is single-owner — close the GUI before running `qmk flash` or any
   device probe. See the top-level README for the full caveat.
-- `ENCODER_MAP_ENABLE = yes` (in `keymaps/vegar/rules.mk`) means encoder
-  bindings are compile-time, not VIA-runtime-configurable. That is the price of
-  being able to override `MOUSEKEY_WHEEL_*` in `config.h`. The GUI can still
-  display the encoder bindings, but the "set encoder" path will be a no-op for
-  this firmware.
+- With VIA and `ENCODER_MAP_ENABLE = yes`, encoder bindings are stored
+  dynamically. Keys and the inner encoder can be remapped at runtime and
+  survive reboot. The outer ring is reserved for scrolling: changing its VIA
+  bindings disables scrolling until those bindings are restored at reboot.
+  QMK's normal initialization of invalid EEPROM still installs defaults;
+  this change does not recover remaps already erased by older firmware.

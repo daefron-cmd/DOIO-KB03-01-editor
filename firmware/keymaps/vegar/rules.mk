@@ -1,9 +1,8 @@
 ENCODER_MAP_ENABLE = yes
 
 # Keep VIA on so usevia.app can remap keys/layers/macros at runtime.
-# (Note: with ENCODER_MAP_ENABLE the encoder bindings are compile-time
-# and not VIA-runtime-configurable — that is the trade-off for being
-# able to set the wheel tuning constants in config.h.)
+# VIA stores encoder bindings dynamically. The boot hook reserves only
+# the outer ring; keys and inner-encoder remaps persist across boots.
 VIA_ENABLE = yes
 
 # MX-Master scroll support

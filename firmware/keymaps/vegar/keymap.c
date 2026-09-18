@@ -12,6 +12,7 @@
 // See docs/superpowers/specs/2026-06-08-outer-encoder-mx-scroll-design.md
 
 #include QMK_KEYBOARD_H
+#include "dynamic_keymap.h"
 
 #include "inertia.h"
 
@@ -102,13 +103,16 @@ void housekeeping_task_user(void) {
 
 void keyboard_post_init_user(void) {
 #ifdef ENCODER_MAP_ENABLE
-    // Force EEPROM dynamic-keymap to match the compile-time keymaps[]
-    // and encoder_map[] on every boot. Required because VIA_ENABLE +
-    // ENCODER_MAP_ENABLE persists encoder bindings in EEPROM and
-    // continues using stale values across reflashes — without this,
-    // edits to encoder_map[] in this file never take effect at runtime.
-    // Side-effect (consistent with the "outer ring is reserved" policy):
-    // any VIA remap is silently reverted on next boot.
-    dynamic_keymap_reset();
+    // Migrate stale outer-ring bindings without erasing VIA key or inner-
+    // encoder remaps. Only write changed entries to avoid boot-time wear.
+    for (uint8_t layer = 0; layer < dynamic_keymap_get_layer_count(); layer++) {
+        for (uint8_t direction = 0; direction < NUM_DIRECTIONS; direction++) {
+            bool clockwise = direction != 0;
+            uint16_t code = clockwise ? OUTER_SCROLL_CW : OUTER_SCROLL_CCW;
+            if (dynamic_keymap_get_encoder(layer, 1, clockwise) != code) {
+                dynamic_keymap_set_encoder(layer, 1, clockwise, code);
+            }
+        }
+    }
 #endif
 }
