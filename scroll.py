@@ -53,7 +53,8 @@ class ScrollPhase:
     """Mirror of CoreGraphics CGScrollPhase values (NOT NSEvent values).
     Verified at runtime against Quartz.kCGScrollPhase* on Darwin.
     """
-    NONE = 0       # local sentinel; CoreGraphics has no NONE
+
+    NONE = 0  # local sentinel; CoreGraphics has no NONE
     BEGAN = 1
     CHANGED = 2
     ENDED = 4
@@ -63,6 +64,7 @@ class ScrollPhase:
 
 class MomentumPhase:
     """Mirror of kCGScrollWheelEventMomentumPhase enum values."""
+
     NONE = 0
     BEGAN = 1
     CHANGED = 2
@@ -128,8 +130,10 @@ class ScrollEngine:
         tau_s = self.config.tau_ms / 1000.0
 
         # 1. ACTIVE → MOMENTUM / IDLE
-        if (self.state.phase == Phase.ACTIVE
-                and (now - self.state.last_tick_ms) > self.config.active_window_ms):
+        if (
+            self.state.phase == Phase.ACTIVE
+            and (now - self.state.last_tick_ms) > self.config.active_window_ms
+        ):
             if abs(self.state.velocity) > self.config.coast_threshold:
                 self.enter_momentum(now)
             else:
@@ -140,8 +144,10 @@ class ScrollEngine:
         self.state.velocity *= math.exp(-dt_s / tau_s)
 
         # 3. End of momentum
-        if (self.state.phase == Phase.MOMENTUM
-                and abs(self.state.velocity) < self.config.cutoff_v):
+        if (
+            self.state.phase == Phase.MOMENTUM
+            and abs(self.state.velocity) < self.config.cutoff_v
+        ):
             self.enter_idle_from_momentum()
             return
 
@@ -165,9 +171,8 @@ class ScrollEngine:
 
         # Direction-flip kill (only when there's existing velocity to flip
         # AND the new impulse opposes it)
-        flipped = (
-            self.state.velocity != 0
-            and (self.state.velocity > 0) != (signed_impulse > 0)
+        flipped = self.state.velocity != 0 and (self.state.velocity > 0) != (
+            signed_impulse > 0
         )
         if flipped:
             if self.state.phase == Phase.MOMENTUM:
@@ -269,14 +274,20 @@ def make_cgevent_post():
         ev = Quartz.CGEventCreateScrollWheelEvent2(
             None,
             Quartz.kCGScrollEventUnitPixel,
-            1,           # wheelCount
-            pixels, 0, 0)
+            1,  # wheelCount
+            pixels,
+            0,
+            0,
+        )
         Quartz.CGEventSetIntegerValueField(
-            ev, Quartz.kCGScrollWheelEventScrollPhase, scroll_phase)
+            ev, Quartz.kCGScrollWheelEventScrollPhase, scroll_phase
+        )
         Quartz.CGEventSetIntegerValueField(
-            ev, Quartz.kCGScrollWheelEventMomentumPhase, momentum_phase)
+            ev, Quartz.kCGScrollWheelEventMomentumPhase, momentum_phase
+        )
         Quartz.CGEventSetIntegerValueField(
-            ev, Quartz.kCGScrollWheelEventIsContinuous, 1)
+            ev, Quartz.kCGScrollWheelEventIsContinuous, 1
+        )
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
 
     return _post
@@ -288,21 +299,19 @@ def is_accessibility_trusted(prompt: bool = False) -> bool:
     call when not yet trusted.
     """
     import sys
+
     if sys.platform != "darwin":
         return False
     try:
         import ApplicationServices
     except ImportError:
         return False
-    options = {
-        ApplicationServices.kAXTrustedCheckOptionPrompt: prompt
-    }
-    return bool(
-        ApplicationServices.AXIsProcessTrustedWithOptions(options))
+    options = {ApplicationServices.kAXTrustedCheckOptionPrompt: prompt}
+    return bool(ApplicationServices.AXIsProcessTrustedWithOptions(options))
 
 
 class QtScrollEngine(QObject):
-    """Qt wrapper that drives ScrollEngine.tick at 120 Hz via QTimer.
+    """Drive ScrollEngine at 120 Hz only during active motion or momentum.
 
     Failure modes:
       - pyobjc.Quartz import fails / post setup fails: emits `error`,
@@ -328,8 +337,8 @@ class QtScrollEngine(QObject):
 
     @Slot()
     def start_real(self) -> None:
-        """Production start: install the real Quartz poster and begin
-        ticking. Called on the engine thread via QThread.started.
+        """Install the Quartz poster; remain ready while the timer is idle.
+        Called on the engine thread via QThread.started.
 
         If Quartz import or post-helper construction fails, emit `error`
         and `stopped` instead of `started` — readiness stays false and
@@ -344,8 +353,7 @@ class QtScrollEngine(QObject):
         if self._timer is None:
             self._timer = QTimer(self)
             self._timer.setInterval(self.TICK_PERIOD_MS)
-            self._timer.timeout.connect(self.engine.tick)
-        self._timer.start()
+            self._timer.timeout.connect(self._tick)
         self.started.emit()
 
     @Slot()
@@ -354,14 +362,36 @@ class QtScrollEngine(QObject):
         # thread — see main.py shutdown.
         if self._timer is not None:
             self._timer.stop()
+        if self.engine.state.phase == Phase.MOMENTUM:
+            self.engine.enter_idle_from_momentum()
+        elif self.engine.state.phase == Phase.ACTIVE:
+            self.engine.enter_idle(post_ended=True)
+        self._post = None
         self.stopped.emit()
 
     @Slot(int, int)
     def on_scroll_tick(self, direction: int, device_t_ms: int) -> None:
+        if self._post is None:
+            return
         self.engine.on_tick(direction, device_t_ms)
+        self._sync_timer()
 
-    def _post_scroll_safe(self, pixels: int, scroll_phase: int,
-                          momentum_phase: int) -> None:
+    @Slot()
+    def _tick(self) -> None:
+        self.engine.tick()
+        self._sync_timer()
+
+    def _sync_timer(self) -> None:
+        if self._timer is None:
+            return
+        if self.engine.state.phase == Phase.IDLE:
+            self._timer.stop()
+        elif not self._timer.isActive():
+            self._timer.start()
+
+    def _post_scroll_safe(
+        self, pixels: int, scroll_phase: int, momentum_phase: int
+    ) -> None:
         if self._post is None:
             return  # not started / not on macOS / startup failed
         self._post(pixels, scroll_phase, momentum_phase)
